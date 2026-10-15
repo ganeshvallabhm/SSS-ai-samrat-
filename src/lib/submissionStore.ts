@@ -12,7 +12,8 @@ export interface LocalSubmission extends Submission {
 
 type Listener = () => void;
 
-let localSubmissions: LocalSubmission[] = [];
+const EMPTY_SNAPSHOT: LocalSubmission[] = [];
+let localSubmissions: LocalSubmission[] = EMPTY_SNAPSHOT;
 const listeners = new Set<Listener>();
 
 function notify() {
@@ -22,6 +23,9 @@ function notify() {
 export const submissionStore = {
   getSnapshot(): LocalSubmission[] {
     return localSubmissions;
+  },
+  getServerSnapshot(): LocalSubmission[] {
+    return EMPTY_SNAPSHOT;
   },
   subscribe(listener: Listener): () => void {
     listeners.add(listener);

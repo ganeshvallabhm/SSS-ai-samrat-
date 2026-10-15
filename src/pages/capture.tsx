@@ -715,5 +715,6 @@ export function useLocalSubmissions() {
   return useSyncExternalStore(
     submissionStore.subscribe,
     submissionStore.getSnapshot,
+    submissionStore.getServerSnapshot,
   );
 }

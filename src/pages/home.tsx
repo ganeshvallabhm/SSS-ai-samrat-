@@ -8,7 +8,11 @@ import { Brand, SectionTitle, SubmissionRow, TaskCard, VerifiedNote } from '@/co
 import { submissionStore } from '@/lib/submissionStore';
 export function HomePage() {
  const { data } = useSuspenseQuery(snapshotOptions);
- const localSubs = useSyncExternalStore(submissionStore.subscribe, submissionStore.getSnapshot);
+ const localSubs = useSyncExternalStore(
+   submissionStore.subscribe,
+   submissionStore.getSnapshot,
+   submissionStore.getServerSnapshot,
+ );
  const approved = data.submissions.filter(s => s.status === 'approved').length;
  // Merge local submissions with server ones; local entries first, deduped by id
  const localIds = new Set(localSubs.map(s => s.id));
