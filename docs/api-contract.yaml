@@ -1,0 +1,1976 @@
+openapi: 3.1.0
+info:
+  title: SSS Civic Tech API
+  summary: OpenAPI 3.1 Specification for SSS Civic Tech Civic Engagement Platform
+  description: |
+    Backend API contract for SSS Civic Tech.
+    Citizens perform verified civic tasks with live geo-tagged camera captures, earn non-transferable reward points, and redeem branded gift vouchers.
+    
+    ### Role-Based Access Control
+    - **citizen**: General authenticated civic users. Can browse tasks, upload submissions, manage wallet, and redeem vouchers.
+    - **reviewer**: Civic ward moderators/verifiers. Can view the verification queue, review photos/GPS, approve or reject submissions.
+    - **admin**: Municipal administrators. Access to aggregate KPIs, spatial heat-maps (GeoJSON), and ward breakdowns.
+  version: 1.0.0
+  license:
+    name: MIT
+    identifier: MIT
+  contact:
+    name: Civic Tech Engineering Team
+    email: api@ssscivic.org
+
+servers:
+  - url: https://api.civictech.org/api/v1
+    description: Production API Server
+  - url: http://localhost:8000/api/v1
+    description: Local Development Server
+
+tags:
+  - name: Auth
+    description: Phone OTP authentication and session management
+  - name: Tasks
+    description: Civic tasks exploration, filtering, and geolocation sorting
+  - name: Submissions
+    description: Live geo-tagged camera submissions and citizen audit timeline
+  - name: Wallet
+    description: Points balance, monthly progress ledger, and redemption history
+  - name: Vouchers
+    description: Partner vouchers and instant code redemption
+  - name: Reviewer
+    description: Verification queue, submission audit, and approval/rejection workflows
+  - name: Admin
+    description: City-wide analytics, GeoJSON heatmaps, and ward performance
+  - name: Notifications
+    description: Citizen push and in-app status notifications
+  - name: Surveys
+    description: Local governance surveys and community feedback
+
+paths:
+  # ============================================================================
+  # 1. AUTH
+  # ============================================================================
+  /auth/otp/request:
+    post:
+      tags: [Auth]
+      security: []
+      summary: Request an OTP for phone number
+      description: |
+        Generates and dispatches a 6-digit SMS OTP to a 10-digit Indian mobile number.
+        Rate-limited with a 30-second cooldown between resend attempts.
+      operationId: requestOtp
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OtpRequest'
+      responses:
+        '200':
+          description: OTP successfully dispatched
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OtpRequestResponse'
+        '400':
+          $ref: '#/components/responses/400BadRequest'
+        '429':
+          description: Rate limit exceeded (wait 30s before resend)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/500InternalError'
+
+  /auth/otp/verify:
+    post:
+      tags: [Auth]
+      security: []
+      summary: Verify OTP and exchange for JWT
+      description: |
+        Verifies the 6-digit SMS OTP. If valid, signs and returns access and refresh JWT tokens
+        along with the authenticated user profile and roles.
+      operationId: verifyOtp
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OtpVerifyRequest'
+      responses:
+        '200':
+          description: Authentication successful
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthSessionResponse'
+        '400':
+          $ref: '#/components/responses/400BadRequest'
+        '401':
+          description: Invalid or expired OTP code
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/500InternalError'
+
+  /auth/refresh:
+    post:
+      tags: [Auth]
+      security: []
+      summary: Refresh access token
+      description: Issues a new JWT access token using a valid refresh token.
+      operationId: refreshToken
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refreshToken]
+              properties:
+                refreshToken:
+                  type: string
+                  description: Valid refresh token
+      responses:
+        '200':
+          description: Token refreshed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthTokenPair'
+        '401':
+          $ref: '#/components/responses/401Unauthorized'
+
+  /auth/logout:
+    post:
+      tags: [Auth]
+      summary: Revoke session and log out
+      description: Invalidates active refresh tokens for the authenticated user.
+      operationId: logout
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Logged out successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  signedOut:
+                    type: boolean
+                    example: true
+        '401':
+          $ref: '#/components/responses/401Unauthorized'
+
+  # ============================================================================
+  # 2. TASKS
+  # ============================================================================
+  /tasks:
+    get:
+      tags: [Tasks]
+      summary: List civic tasks
+      description: |
+        Fetch tasks available in the citizen's city and ward.
+        Allows filtering by category, search text, and sorting by proximity when user coordinates (lat, lng) are provided.
+      operationId: listTasks
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: category
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/TaskCategory'
+        - name: search
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Search term across title, location, and description
+        - name: lat
+          in: query
+          required: false
+          schema:
+            type: number
+            format: double
+          description: User's current latitude for distance calculation
+        - name: lng
+          in: query
+          required: false
+          schema:
+            type: number
+            format: double
+          description: User's current longitude for distance calculation
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 1
+            minimum: 1
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 20
+            minimum: 1
+            maximum: 100
+      responses:
+        '200':
+          description: List of tasks with pagination
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedTasks'
+        '401':
+          $ref: '#/components/responses/401Unauthorized'
+
+  /tasks/{taskId}:
+    get:
+      tags: [Tasks]
+      summary: Get task details by ID
+      description: Returns complete specifications, eligibility rules, and instructions for a specific task.
+      operationId: getTaskById
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: taskId
+          in: path
+          required: true
+          schema:
+            type: string
+          example: t2
+      responses:
+        '200':
+          description: Task details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task'
+        '401':
+          $ref: '#/components/responses/401Unauthorized'
+        '404':
+          $ref: '#/components/responses/404NotFound'
+
+  # ============================================================================
+  # 3. SUBMISSIONS
+  # ============================================================================
+  /submissions:
+    post:
+      tags: [Submissions]
+      summary: Create a live geo-tagged submission
+      description: |
+        Uploads a live captured photo together with spatial coordinates, timestamp, category, and optional notes.
+        Requires multipart/form-data. File must be an authentic JPEG image.
+      operationId: createSubmission
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                - photo
+                - lat
+                - lng
+                - accuracy
+                - timestamp
+                - categoryId
+                - taskId
+              properties:
+                photo:
+                  type: string
+                  format: binary
+                  description: JPEG photo captured from live device camera
+                lat:
+                  type: number
+                  format: double
+                  description: Geolocation latitude coordinate
+                  example: 17.46821
+                lng:
+                  type: number
+                  format: double
+                  description: Geolocation longitude coordinate
+                  example: 78.36184
+                accuracy:
+                  type: number
+                  format: float
+                  description: Geolocation accuracy radius in meters
+                  example: 8.5
+                timestamp:
+                  type: string
+                  format: date-time
+                  description: Client ISO8601 capture timestamp
+                  example: "2026-10-12T09:30:00Z"
+                categoryId:
+                  $ref: '#/components/schemas/TaskCategory'
+                taskId:
+                  type: string
+                  description: Associated task identifier
+                  example: t2
+                note:
+                  type: string
+                  description: Optional citizen note or description
+                  maxLength: 500
+                  example: "Pothole located near the water tank road"
+                address:
+                  type: string
+                  description: Reverse geocoded address string
+                  example: "Kondapur Main Road, Ward 104"
+      responses:
+        '201':
+          description: Submission created and queued for review
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubmissionDetail'
+        '400':
+          $ref: '#/components/responses/400BadRequest'
+        '401':
+          $ref: '#/components/responses/401Unauthorized'
+        '422':
+          $ref: '#/components/responses/422Unprocessable'
+        '500':
+          $ref: '#/components/responses/500InternalError'
+
+  /submissions/mine:
+    get:
+      tags: [Submissions]
+      summary: List current citizen's submissions
+      description: Fetches all civic task submissions made by the authenticated citizen.
+      operationId: listMySubmissions
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/SubmissionStatus'
+          description: Filter by review status
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 1
+            minimum: 1
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 20
+            maximum: 100
+      responses:
+        '200':
+          description: Paginated citizen submissions
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedSubmissions'
+        '401':
+          $ref: '#/components/responses/401Unauthorized'
+
+  /submissions/{submissionId}:
+    get:
+      tags: [Submissions]
+      summary: Get submission details by ID
+      description: Includes photo URL, coordinates, status timeline, and rejection reason if applicable.
+      operationId: getSubmissionById
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: submissionId
+          in: path
+          required: true
+          schema:
+            type: string
+          example: s3
+      responses:
+        '200':
+          description: Complete submission audit detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubmissionDetail'
+        '401':
+          $ref: '#/components/responses/401Unauthorized'
+        '404':
+          $ref: '#/components/responses/404NotFound'
+
+  /submissions/{submissionId}/resubmit:
+    post:
+      tags: [Submissions]
+      summary: Resubmit a rejected submission with new photo
+      description: Allows a citizen to provide a clearer photo and updated GPS coordinates for a previously rejected submission.
+      operationId: resubmitSubmission
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: submissionId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                - photo
+                - lat
+                - lng
+                - accuracy
+                - timestamp
+              properties:
+                photo:
+                  type: string
+                  format: binary
+                  description: Retaken live JPEG image
+                lat:
+                  type: number
+                  format: double
+                lng:
+                  type: number
+                  format: double
+                accuracy:
+                  type: number
+                  format: float
+                timestamp:
+                  type: string
+                  format: date-time
+                note:
+                  type: string
+                  maxLength: 500
+      responses:
+        '200':
+          description: Submission updated and returned to review queue
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubmissionDetail'
+        '400':
+          $ref: '#/components/responses/400BadRequest'
+        '401':
+          $ref: '#/components/responses/401Unauthorized'
+        '404':
+          $ref: '#/components/responses/404NotFound'
+        '409':
+          description: Submission is not in rejected status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  # ============================================================================
+  # 4. WALLET & POINTS
+  # ============================================================================
+  /wallet:
+    get:
+      tags: [Wallet]
+      summary: Get citizen wallet summary
+      description: Returns active balance, monthly earned points, 500-point monthly cap, and progress percentage.
+      operationId: getWalletSummary
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Wallet overview
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WalletSummary'
+        '401':
+          $ref: '#/components/responses/401Unauthorized'
+
+  /wallet/transactions:
+    get:
+      tags: [Wallet]
+      summary: List points history ledger
+      description: Read-only ledger transactions showing earned rewards and redeemed voucher deductions.
+      operationId: listTransactions
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: type
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [earned, redeemed]
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 1
+            minimum: 1
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 20
+            maximum: 100
+      responses:
+        '200':
+          description: Ledger transactions
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedTransactions'
+        '401':
+          $ref: '#/components/responses/401Unauthorized'
+
+  /wallet/redemptions:
+    get:
+      tags: [Wallet]
+      summary: List voucher redemption history
+      description: Shows all redeemed vouchers, security codes, and expiration timestamps.
+      operationId: listRedemptions
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 1
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 20
+      responses:
+        '200':
+          description: Redemption records
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedRedemptions'
+        '401':
+          $ref: '#/components/responses/401Unauthorized'
+
+  # ============================================================================
+  # 5. VOUCHERS
+  # ============================================================================
+  /vouchers:
+    get:
+      tags: [Vouchers]
+      summary: List catalog of redeemable vouchers
+      description: Returns denominations (₹100, ₹250, ₹500) and eligible partner brands (Amazon, Flipkart).
+      operationId: listVouchers
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Catalog of vouchers
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Voucher'
+        '401':
+          $ref: '#/components/responses/401Unauthorized'
+
+  /vouchers/{voucherId}:
+    get:
+      tags: [Vouchers]
+      summary: Get voucher details by ID
+      operationId: getVoucherById
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: voucherId
+          in: path
+          required: true
+          schema:
+            type: string
+          example: v100
+      responses:
+        '200':
+          description: Voucher details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Voucher'
+        '401':
+          $ref: '#/components/responses/401Unauthorized'
+        '404':
+          $ref: '#/components/responses/404NotFound'
+
+  /vouchers/{voucherId}/redeem:
+    post:
+      tags: [Vouchers]
+      summary: Redeem points for a gift voucher
+      description: |
+        Deducts the specified voucher point cost from user balance, generates an authentic redemption code,
+        adds a ledger transaction, and issues a readiness notification.
+
+        ### Idempotency Semantics
+        The request requires an `idempotency_key` in the request body. If multiple requests are sent with the same key, the endpoint returns the existing redemption record with HTTP 200 and never deducts points twice.
+      operationId: redeemVoucher
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: voucherId
+          in: path
+          required: true
+          schema:
+            type: string
+          example: v100
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RedeemRequest'
+      responses:
+        '200':
+          description: Redemption completed and code generated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Redemption'
+        '400':
+          description: Insufficient balance or invalid brand
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/401Unauthorized'
+        '404':
+          $ref: '#/components/responses/404NotFound'
+        '409':
+          $ref: '#/components/responses/409Conflict'
+
+  # ============================================================================
+  # 6. REVIEWER
+  # ============================================================================
+  /reviewer/queue:
+    get:
+      tags: [Reviewer]
+      summary: Review queue for ward verifiers
+      description: |
+        Reviewer/Admin only. Lists pending civic submissions requiring verification.
+        Supports filtering by ward, category, and submission date.
+      operationId: getReviewQueue
+      x-required-role: reviewer
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: ward
+          in: query
+          required: false
+          schema:
+            type: string
+          example: "Ward 104"
+        - name: category
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/TaskCategory'
+        - name: dateFrom
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date
+        - name: dateTo
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 1
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 25
+      responses:
+        '200':
+          description: Paginated queue of pending submissions
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedReviewQueue'
+        '401':
+          $ref: '#/components/responses/401Unauthorized'
+        '403':
+          $ref: '#/components/responses/403Forbidden'
+
+  /reviewer/submissions/{submissionId}:
+    get:
+      tags: [Reviewer]
+      summary: Detailed submission audit view for reviewers
+      description: Reviewer/Admin only. Includes high-resolution imagery, exact coordinates, device accuracy, and user audit history.
+      operationId: getReviewSubmissionDetail
+      x-required-role: reviewer
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: submissionId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Comprehensive verification audit bundle
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReviewAuditDetail'
+        '401':
+          $ref: '#/components/responses/401Unauthorized'
+        '403':
+          $ref: '#/components/responses/403Forbidden'
+        '404':
+          $ref: '#/components/responses/404NotFound'
+
+  /reviewer/submissions/{submissionId}/review:
+    post:
+      tags: [Reviewer]
+      summary: Approve or reject a civic submission
+      description: |
+        Reviewer/Admin only.
+        - Approve: Marks submission approved, mints non-transferable reward points, appends to points ledger, sends approval notification.
+        - Reject: Marks submission rejected, stores mandatory rejection reason and internal notes, sends rejection notification with guidance.
+      operationId: reviewSubmission
+      x-required-role: reviewer
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: submissionId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReviewActionRequest'
+      responses:
+        '200':
+          description: Submission review recorded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubmissionDetail'
+        '400':
+          $ref: '#/components/responses/400BadRequest'
+        '401':
+          $ref: '#/components/responses/401Unauthorized'
+        '403':
+          $ref: '#/components/responses/403Forbidden'
+        '404':
+          $ref: '#/components/responses/404NotFound'
+
+  # ============================================================================
+  # 7. ADMIN
+  # ============================================================================
+  /admin/kpis:
+    get:
+      tags: [Admin]
+      summary: High-level civic tech performance indicators
+      description: Admin only. Overview of platform velocity, submission approval ratios, points economy, and review SLAs.
+      operationId: getAdminKpis
+      x-required-role: admin
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: System-wide KPI summary
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminKpiResponse'
+        '401':
+          $ref: '#/components/responses/401Unauthorized'
+        '403':
+          $ref: '#/components/responses/403Forbidden'
+
+  /admin/heatmap:
+    get:
+      tags: [Admin]
+      summary: GeoJSON submission spatial clusters
+      description: Admin/Reviewer. Returns GeoJSON FeatureCollection of all civic audit coordinates for map visualization and heatmaps.
+      operationId: getSubmissionHeatmap
+      x-required-role: admin
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: category
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/TaskCategory'
+        - name: status
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/SubmissionStatus'
+        - name: ward
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: GeoJSON FeatureCollection format
+          content:
+            application/geo+json:
+              schema:
+                $ref: '#/components/schemas/GeoJsonFeatureCollection'
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GeoJsonFeatureCollection'
+        '401':
+          $ref: '#/components/responses/401Unauthorized'
+        '403':
+          $ref: '#/components/responses/403Forbidden'
+
+  /admin/wards:
+    get:
+      tags: [Admin]
+      summary: Ward-wise breakdown and statistics
+      description: Admin only. Metrics aggregated per ward (submission count, verification rate, active citizens).
+      operationId: getWardStats
+      x-required-role: admin
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Ward statistical breakdown
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/WardSummary'
+        '401':
+          $ref: '#/components/responses/401Unauthorized'
+        '403':
+          $ref: '#/components/responses/403Forbidden'
+
+  # ============================================================================
+  # 8. NOTIFICATIONS & SURVEYS
+  # ============================================================================
+  /notifications:
+    get:
+      tags: [Notifications]
+      summary: List user notifications
+      description: Retrieves in-app alerts for approved/rejected submissions, minted points, and ready gift vouchers.
+      operationId: listNotifications
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: unreadOnly
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: false
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 1
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 30
+      responses:
+        '200':
+          description: List of notifications
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedNotifications'
+        '401':
+          $ref: '#/components/responses/401Unauthorized'
+
+  /notifications/mark-read:
+    post:
+      tags: [Notifications]
+      summary: Mark notifications as read
+      description: Marks all or specified notification IDs as read.
+      operationId: markNotificationsRead
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                notificationIds:
+                  type: array
+                  items:
+                    type: string
+                  description: Optional array of IDs to mark read; if omitted, marks all read
+      responses:
+        '200':
+          description: Notifications marked read
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  updatedCount:
+                    type: integer
+                    example: 3
+        '401':
+          $ref: '#/components/responses/401Unauthorized'
+
+  /surveys:
+    get:
+      tags: [Surveys]
+      summary: List active governance surveys
+      description: Fetches open municipal and community governance questionnaires.
+      operationId: listSurveys
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: List of available surveys
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Survey'
+        '401':
+          $ref: '#/components/responses/401Unauthorized'
+
+  /surveys/{surveyId}/responses:
+    post:
+      tags: [Surveys]
+      summary: Submit response for a survey
+      description: Submits survey answers and awards corresponding governance participation points.
+      operationId: submitSurveyResponse
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: surveyId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SurveySubmissionRequest'
+      responses:
+        '201':
+          description: Survey recorded and points awarded
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  submissionId:
+                    type: string
+                    example: "srv-9281"
+                  pointsAwarded:
+                    type: integer
+                    example: 30
+                  message:
+                    type: string
+                    example: "Survey response recorded. 30 points credited."
+        '400':
+          $ref: '#/components/responses/400BadRequest'
+        '401':
+          $ref: '#/components/responses/401Unauthorized'
+        '404':
+          $ref: '#/components/responses/404NotFound'
+
+# ==============================================================================
+# COMPONENTS & SCHEMAS
+# ==============================================================================
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Standard JWT authentication token passed in Authorization header.
+
+  responses:
+    400BadRequest:
+      description: Invalid request payload or parameters
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    401Unauthorized:
+      description: Missing or expired authentication token
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    403Forbidden:
+      description: Forbidden - User lacks required role permissions
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    404NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    409Conflict:
+      description: Resource conflict or duplicate action
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    422Unprocessable:
+      description: Validation failure (e.g. invalid GPS accuracy, corrupt photo)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    500InternalError:
+      description: Internal server error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+
+  schemas:
+    # Common Error Schema
+    ErrorResponse:
+      type: object
+      required:
+        - code
+        - message
+        - timestamp
+      properties:
+        code:
+          type: string
+          example: INVALID_INPUT
+        message:
+          type: string
+          example: "Enter a valid 10-digit mobile number."
+        details:
+          type: array
+          items:
+            type: object
+            properties:
+              field:
+                type: string
+                example: phone
+              issue:
+                type: string
+                example: "Must match 10 numeric digits"
+        timestamp:
+          type: string
+          format: date-time
+          example: "2026-10-12T10:00:00Z"
+        requestId:
+          type: string
+          example: "req_f81d4fae7dec"
+
+    # Pagination Meta
+    PaginationMeta:
+      type: object
+      required:
+        - page
+        - limit
+        - totalItems
+        - totalPages
+      properties:
+        page:
+          type: integer
+          example: 1
+        limit:
+          type: integer
+          example: 20
+        totalItems:
+          type: integer
+          example: 45
+        totalPages:
+          type: integer
+          example: 3
+        hasNextPage:
+          type: boolean
+          example: true
+
+    # User & Auth
+    UserRole:
+      type: string
+      enum: [citizen, reviewer, admin]
+      example: citizen
+
+    User:
+      type: object
+      required:
+        - id
+        - name
+        - phone
+        - ward
+        - city
+        - balance
+        - monthlyPoints
+        - role
+      properties:
+        id:
+          type: string
+          example: u1
+        name:
+          type: string
+          example: "Ananya Reddy"
+        phone:
+          type: string
+          pattern: '^[0-9]{10}$'
+          example: "9876543210"
+        ward:
+          type: string
+          example: "Ward 104 · Kondapur"
+        city:
+          type: string
+          example: "Hyderabad"
+        balance:
+          type: integer
+          minimum: 0
+          description: Non-transferable point balance
+          example: 320
+        monthlyPoints:
+          type: integer
+          minimum: 0
+          description: Points accumulated in current billing month (capped at 500)
+          example: 180
+        role:
+          $ref: '#/components/schemas/UserRole'
+
+    OtpRequest:
+      type: object
+      required:
+        - phone
+      properties:
+        phone:
+          type: string
+          pattern: '^[0-9]{10}$'
+          description: 10-digit Indian phone number without country code
+          example: "9876543210"
+
+    OtpRequestResponse:
+      type: object
+      required:
+        - sent
+        - cooldownSeconds
+      properties:
+        sent:
+          type: boolean
+          example: true
+        cooldownSeconds:
+          type: integer
+          example: 30
+        message:
+          type: string
+          example: "OTP sent to 9876543210"
+
+    OtpVerifyRequest:
+      type: object
+      required:
+        - phone
+        - code
+      properties:
+        phone:
+          type: string
+          pattern: '^[0-9]{10}$'
+          example: "9876543210"
+        code:
+          type: string
+          pattern: '^[0-9]{6}$'
+          example: "123456"
+
+    AuthTokenPair:
+      type: object
+      required:
+        - accessToken
+        - refreshToken
+        - tokenType
+        - expiresIn
+      properties:
+        accessToken:
+          type: string
+          example: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+        refreshToken:
+          type: string
+          example: "dGhpcy1pcy1hLXJlZnJlc2gtdG9rZW4..."
+        tokenType:
+          type: string
+          example: Bearer
+        expiresIn:
+          type: integer
+          description: Access token lifetime in seconds (e.g. 3600 = 1 hour)
+          example: 3600
+
+    AuthSessionResponse:
+      type: object
+      required:
+        - tokens
+        - user
+      properties:
+        tokens:
+          $ref: '#/components/schemas/AuthTokenPair'
+        user:
+          $ref: '#/components/schemas/User'
+
+    # Tasks
+    TaskCategory:
+      type: string
+      enum: [civic, green, health, governance]
+      example: civic
+
+    Task:
+      type: object
+      required:
+        - id
+        - title
+        - category
+        - points
+        - distance
+        - location
+        - description
+        - requirements
+        - date
+      properties:
+        id:
+          type: string
+          example: t1
+        title:
+          type: string
+          example: "Plant a little. Change a lot."
+        category:
+          $ref: '#/components/schemas/TaskCategory'
+        points:
+          type: integer
+          minimum: 1
+          example: 50
+        distance:
+          type: number
+          format: float
+          description: Proximity in km from user's queried location
+          example: 0.8
+        location:
+          type: string
+          example: "Kondapur Botanical Garden"
+        description:
+          type: string
+          example: "Give your neighbourhood a greener tomorrow. Plant a native sapling at the community planting drive."
+        requirements:
+          type: array
+          items:
+            type: string
+          example:
+            - "Plant one native sapling in the designated area"
+            - "Take a live photo of the planted sapling"
+            - "Keep location enabled for verification"
+        date:
+          type: string
+          format: date
+          example: "2026-10-12"
+
+    PaginatedTasks:
+      type: object
+      required:
+        - items
+        - meta
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Task'
+        meta:
+          $ref: '#/components/schemas/PaginationMeta'
+
+    # Submissions
+    SubmissionStatus:
+      type: string
+      enum: [under_review, approved, rejected]
+      example: under_review
+
+    StatusTimelineEvent:
+      type: object
+      required:
+        - status
+        - timestamp
+      properties:
+        status:
+          $ref: '#/components/schemas/SubmissionStatus'
+        timestamp:
+          type: string
+          format: date-time
+          example: "2026-10-12T09:30:00+05:30"
+        actor:
+          type: string
+          example: "Automated Intake / Reviewer R104"
+        note:
+          type: string
+          example: "Initial live capture received with GPS lock"
+
+    SubmissionDetail:
+      type: object
+      required:
+        - id
+        - taskId
+        - status
+        - submittedAt
+        - photoUrl
+        - lat
+        - lng
+        - accuracy
+      properties:
+        id:
+          type: string
+          example: s1
+        taskId:
+          type: string
+          example: t2
+        status:
+          $ref: '#/components/schemas/SubmissionStatus'
+        submittedAt:
+          type: string
+          format: date-time
+          example: "2026-10-11T09:30:00+05:30"
+        reviewedAt:
+          type: [string, "null"]
+          format: date-time
+          example: "2026-10-11T14:15:00+05:30"
+        reason:
+          type: [string, "null"]
+          description: Rejection feedback given by reviewer if rejected
+          example: "The pole number was not visible in your photo. Please take a clearer live photo."
+        photoUrl:
+          type: string
+          format: uri
+          example: "https://cdn.civictech.org/submissions/s1-20261011.jpg"
+        lat:
+          type: number
+          format: double
+          example: 17.46821
+        lng:
+          type: number
+          format: double
+          example: 78.36184
+        accuracy:
+          type: number
+          format: float
+          example: 8.5
+        note:
+          type: [string, "null"]
+          example: "Broken road surface near bus stop"
+        address:
+          type: [string, "null"]
+          example: "Kondapur Main Road, Hyderabad"
+        timeline:
+          type: array
+          items:
+            $ref: '#/components/schemas/StatusTimelineEvent'
+        task:
+          $ref: '#/components/schemas/Task'
+
+    PaginatedSubmissions:
+      type: object
+      required:
+        - items
+        - meta
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/SubmissionDetail'
+        meta:
+          $ref: '#/components/schemas/PaginationMeta'
+
+    # Wallet
+    WalletSummary:
+      type: object
+      required:
+        - balance
+        - monthlyPoints
+        - monthlyCap
+        - monthlyProgressPercent
+      properties:
+        balance:
+          type: integer
+          example: 320
+        monthlyPoints:
+          type: integer
+          example: 180
+        monthlyCap:
+          type: integer
+          example: 500
+        monthlyProgressPercent:
+          type: number
+          format: float
+          example: 36.0
+
+    PointsTransaction:
+      type: object
+      required:
+        - id
+        - title
+        - points
+        - date
+        - type
+      properties:
+        id:
+          type: string
+          example: p1
+        title:
+          type: string
+          example: "Neighbourhood tree care"
+        points:
+          type: integer
+          description: Positive for earned, negative for redeemed
+          example: 20
+        date:
+          type: string
+          example: "2026-10-10"
+        type:
+          type: string
+          enum: [earned, redeemed]
+          example: earned
+        submissionId:
+          type: [string, "null"]
+          example: s2
+        redemptionId:
+          type: [string, "null"]
+
+    PaginatedTransactions:
+      type: object
+      required:
+        - items
+        - meta
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/PointsTransaction'
+        meta:
+          $ref: '#/components/schemas/PaginationMeta'
+
+    # Vouchers & Redemptions
+    VoucherBrand:
+      type: string
+      enum: [Amazon, Flipkart]
+      example: Amazon
+
+    Voucher:
+      type: object
+      required:
+        - id
+        - value
+        - cost
+        - brands
+      properties:
+        id:
+          type: string
+          example: v100
+        value:
+          type: integer
+          enum: [100, 250, 500]
+          example: 100
+        cost:
+          type: integer
+          description: Points required to redeem
+          example: 100
+        brands:
+          type: array
+          items:
+            $ref: '#/components/schemas/VoucherBrand'
+          example: [Amazon, Flipkart]
+
+    RedeemRequest:
+      type: object
+      required:
+        - brand
+        - idempotency_key
+      properties:
+        brand:
+          $ref: '#/components/schemas/VoucherBrand'
+        idempotency_key:
+          type: string
+          format: uuid
+          description: Unique UUID generated by client to ensure idempotent redemption and prevent duplicate point deduction.
+          example: "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11"
+
+    Redemption:
+      type: object
+      required:
+        - id
+        - brand
+        - value
+        - cost
+        - code
+        - redeemedAt
+        - expiresAt
+      properties:
+        id:
+          type: string
+          example: r1
+        brand:
+          $ref: '#/components/schemas/VoucherBrand'
+        value:
+          type: integer
+          example: 100
+        cost:
+          type: integer
+          example: 100
+        code:
+          type: string
+          description: Gift card voucher code
+          example: "SSS-DEMO-A100-7K2P"
+        barcodeData:
+          type: string
+          description: Raw barcode string representation for in-store or partner scanner
+          example: "4001928374619"
+        qrCodeData:
+          type: string
+          description: QR payload string
+          example: "https://pay.amazon.in/claim?c=SSS-DEMO-A100-7K2P"
+        redeemedAt:
+          type: string
+          format: date-time
+          example: "2026-09-30T10:00:00+05:30"
+        expiresAt:
+          type: string
+          format: date-time
+          example: "2027-09-30T23:59:59+05:30"
+
+    PaginatedRedemptions:
+      type: object
+      required:
+        - items
+        - meta
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Redemption'
+        meta:
+          $ref: '#/components/schemas/PaginationMeta'
+
+    # Reviewer Schemas
+    ReviewQueueItem:
+      type: object
+      required:
+        - id
+        - taskId
+        - taskTitle
+        - category
+        - submittedAt
+        - citizenName
+        - ward
+        - photoThumbnailUrl
+        - distanceKm
+      properties:
+        id:
+          type: string
+          example: s1
+        taskId:
+          type: string
+          example: t3
+        taskTitle:
+          type: string
+          example: "A cleaner street starts with us"
+        category:
+          $ref: '#/components/schemas/TaskCategory'
+        submittedAt:
+          type: string
+          format: date-time
+          example: "2026-10-11T09:30:00+05:30"
+        citizenName:
+          type: string
+          example: "Ananya Reddy"
+        ward:
+          type: string
+          example: "Ward 104"
+        photoThumbnailUrl:
+          type: string
+          format: uri
+          example: "https://cdn.civictech.org/submissions/s1-thumb.jpg"
+        distanceKm:
+          type: number
+          example: 0.12
+
+    PaginatedReviewQueue:
+      type: object
+      required:
+        - items
+        - meta
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ReviewQueueItem'
+        meta:
+          $ref: '#/components/schemas/PaginationMeta'
+
+    ReviewAuditDetail:
+      type: object
+      required:
+        - submission
+        - citizen
+        - task
+        - verificationChecks
+      properties:
+        submission:
+          $ref: '#/components/schemas/SubmissionDetail'
+        citizen:
+          type: object
+          properties:
+            id:
+              type: string
+            name:
+              type: string
+            trustScore:
+              type: number
+              example: 98.5
+            totalApprovedSubmissions:
+              type: integer
+              example: 14
+        task:
+          $ref: '#/components/schemas/Task'
+        verificationChecks:
+          type: object
+          properties:
+            gpsWithinGeofence:
+              type: boolean
+              example: true
+            deviceIntegrityVerified:
+              type: boolean
+              example: true
+            accuracyMeters:
+              type: number
+              example: 8.5
+            tamperDetected:
+              type: boolean
+              example: false
+
+    ReviewActionRequest:
+      type: object
+      required:
+        - action
+      properties:
+        action:
+          type: string
+          enum: [approve, reject]
+          example: approve
+        reason:
+          type: string
+          description: Compulsory feedback if action is 'reject'
+          example: "The pole number was not visible. Please take a clearer photo."
+        internalNotes:
+          type: string
+          description: Private reviewer notes
+          example: "Pothole confirmed at Kondapur cross road"
+        awardedPoints:
+          type: integer
+          description: Optional override of task points; defaults to standard task points
+          example: 30
+
+    # Admin Schemas
+    AdminKpiResponse:
+      type: object
+      required:
+        - totalSubmissions
+        - pendingReview
+        - approvalRate
+        - totalPointsMinted
+        - totalVouchersRedeemed
+        - activeCitizensMonthly
+        - avgReviewTurnaroundHours
+      properties:
+        totalSubmissions:
+          type: integer
+          example: 12480
+        pendingReview:
+          type: integer
+          example: 42
+        approvalRate:
+          type: number
+          format: float
+          description: Percentage of reviewed submissions approved
+          example: 92.4
+        totalPointsMinted:
+          type: integer
+          example: 384500
+        totalVouchersRedeemed:
+          type: integer
+          example: 1420
+        activeCitizensMonthly:
+          type: integer
+          example: 3890
+        avgReviewTurnaroundHours:
+          type: number
+          format: float
+          example: 4.2
+
+    WardSummary:
+      type: object
+      required:
+        - wardId
+        - wardName
+        - totalSubmissions
+        - approvedSubmissions
+        - activeCitizens
+      properties:
+        wardId:
+          type: string
+          example: "ward-104"
+        wardName:
+          type: string
+          example: "Ward 104 · Kondapur"
+        totalSubmissions:
+          type: integer
+          example: 420
+        approvedSubmissions:
+          type: integer
+          example: 395
+        activeCitizens:
+          type: integer
+          example: 182
+
+    # GeoJSON FeatureCollection Schema
+    GeoJsonFeatureCollection:
+      type: object
+      required:
+        - type
+        - features
+      properties:
+        type:
+          type: string
+          enum: [FeatureCollection]
+          example: FeatureCollection
+        features:
+          type: array
+          items:
+            $ref: '#/components/schemas/GeoJsonFeature'
+
+    GeoJsonFeature:
+      type: object
+      required:
+        - type
+        - geometry
+        - properties
+      properties:
+        type:
+          type: string
+          enum: [Feature]
+          example: Feature
+        geometry:
+          type: object
+          required:
+            - type
+            - coordinates
+          properties:
+            type:
+              type: string
+              enum: [Point]
+              example: Point
+            coordinates:
+              type: array
+              items:
+                type: number
+              minItems: 2
+              maxItems: 3
+              description: "[longitude, latitude] format per GeoJSON RFC 7946"
+              example: [78.36184, 17.46821]
+        properties:
+          type: object
+          required:
+            - submissionId
+            - category
+            - status
+          properties:
+            submissionId:
+              type: string
+              example: s1
+            category:
+              $ref: '#/components/schemas/TaskCategory'
+            status:
+              $ref: '#/components/schemas/SubmissionStatus'
+            ward:
+              type: string
+              example: "Ward 104"
+            timestamp:
+              type: string
+              format: date-time
+              example: "2026-10-11T09:30:00+05:30"
+
+    # Notifications
+    NotificationType:
+      type: string
+      enum: [approved, rejected, points_added, voucher_ready]
+      example: approved
+
+    Notification:
+      type: object
+      required:
+        - id
+        - title
+        - message
+        - type
+        - date
+        - read
+      properties:
+        id:
+          type: string
+          example: n1
+        title:
+          type: string
+          example: "Your tree-care task is approved"
+        message:
+          type: string
+          example: "A little care makes a big difference. Your task has been verified."
+        type:
+          $ref: '#/components/schemas/NotificationType'
+        date:
+          type: string
+          format: date-time
+          example: "2026-10-10T15:00:00+05:30"
+        read:
+          type: boolean
+          example: false
+        submissionId:
+          type: [string, "null"]
+          example: s2
+        redemptionId:
+          type: [string, "null"]
+          example: r1
+
+    PaginatedNotifications:
+      type: object
+      required:
+        - items
+        - meta
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Notification'
+        meta:
+          $ref: '#/components/schemas/PaginationMeta'
+
+    # Surveys
+    SurveyQuestionType:
+      type: string
+      enum: [single_choice, multiple_choice, rating_1_to_5, text]
+      example: single_choice
+
+    SurveyQuestion:
+      type: object
+      required:
+        - id
+        - prompt
+        - type
+      properties:
+        id:
+          type: string
+          example: "q1"
+        prompt:
+          type: string
+          example: "How would you rate the cleanliness of public parks in your ward?"
+        type:
+          $ref: '#/components/schemas/SurveyQuestionType'
+        options:
+          type: array
+          items:
+            type: string
+          example: ["Poor", "Fair", "Good", "Excellent"]
+
+    Survey:
+      type: object
+      required:
+        - id
+        - title
+        - description
+        - points
+        - expiresAt
+        - questions
+      properties:
+        id:
+          type: string
+          example: "srv-1"
+        title:
+          type: string
+          example: "Ward 104 Public Amenities Assessment"
+        description:
+          type: string
+          example: "Help the municipal council assess street lighting, waste disposal, and footpath conditions."
+        points:
+          type: integer
+          example: 30
+        expiresAt:
+          type: string
+          format: date-time
+          example: "2026-10-31T23:59:59+05:30"
+        questions:
+          type: array
+          items:
+            $ref: '#/components/schemas/SurveyQuestion'
+
+    SurveyAnswer:
+      type: object
+      required:
+        - questionId
+        - answer
+      properties:
+        questionId:
+          type: string
+          example: "q1"
+        answer:
+          oneOf:
+            - type: string
+            - type: integer
+            - type: array
+              items:
+                type: string
+          example: "Good"
+
+    SurveySubmissionRequest:
+      type: object
+      required:
+        - answers
+      properties:
+        answers:
+          type: array
+          items:
+            $ref: '#/components/schemas/SurveyAnswer'

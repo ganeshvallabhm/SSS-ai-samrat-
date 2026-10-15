@@ -1,11 +1,17 @@
 import { Link } from '@tanstack/react-router';
 import { useSuspenseQuery } from '@tanstack/react-query';
-import { useState } from 'react';
+import { useState, useSyncExternalStore } from 'react';
 import { Check, Clock3, MapPin, RotateCcw, ShieldCheck, Sprout, XCircle } from 'lucide-react';
 import { snapshotOptions } from '@/api';
 import { Button } from '@/components/ui/button';
 import { EmptyState, PageHeader, StatusChip, SubmissionRow, formatDate, CategoryIcon, VerifiedNote } from '@/components/civic/shared';
-export function SubmissionsPage() { const { data } = useSuspenseQuery(snapshotOptions); const [filter, setFilter] = useState('all'); const rows = data.submissions.filter(s => filter === 'all' || s.status === filter); return <><PageHeader title="My submissions"/><div className="page-content"><div className="intro-copy"><h2>Your good deeds, tracked.</h2><p>Every verified action brings us forward.</p></div><div className="category-filters"><Button variant={filter === 'all' ? 'default' : 'outline'} onClick={() => setFilter('all')}>All ({data.submissions.length})</Button>{(['under_review', 'approved', 'rejected'] as const).map(s => <Button key={s} variant={filter === s ? 'secondary' : 'outline'} onClick={() => setFilter(s)}><StatusChip status={s}/></Button>)}</div><div className="activity-list">{rows.map(s => <SubmissionRow key={s.id} submission={s} tasks={data.tasks}/>)}</div>{!rows.length && <EmptyState title="No submissions yet" message="Complete a nearby task to start making an impact."><Button asChild><Link to="/tasks">Find a task</Link></Button></EmptyState>}</div></>; }
+import { submissionStore } from '@/lib/submissionStore';
+export function SubmissionsPage() { const { data } = useSuspenseQuery(snapshotOptions); const [filter, setFilter] = useState('all');
+ const localSubs = useSyncExternalStore(submissionStore.subscribe, submissionStore.getSnapshot);
+ const localIds = new Set(localSubs.map(s => s.id));
+ const allSubmissions = [...localSubs, ...data.submissions.filter(s => !localIds.has(s.id))];
+ const rows = allSubmissions.filter(s => filter === 'all' || s.status === filter); return <><PageHeader title="My submissions"/><div className="page-content"><div className="intro-copy"><h2>Your good deeds, tracked.</h2><p>Every verified action brings us forward.</p></div><div className="category-filters"><Button variant={filter === 'all' ? 'default' : 'outline'} onClick={() => setFilter('all')}>All ({allSubmissions.length})</Button>{(['under_review', 'approved', 'rejected'] as const).map(s => <Button key={s} variant={filter === s ? 'secondary' : 'outline'} onClick={() => setFilter(s)}><StatusChip status={s}/></Button>)}</div><div className="activity-list">{rows.map(s => <SubmissionRow key={s.id} submission={s} tasks={data.tasks}/>)}</div>{!rows.length && <EmptyState title="No submissions yet" message="Complete a nearby task to start making an impact."><Button asChild><Link to="/tasks">Find a task</Link></Button></EmptyState>}</div></>;
+}
 export function SubmissionDetailPage({ submissionId }: { submissionId: string }) {
  const { data } = useSuspenseQuery(snapshotOptions); const s = data.submissions.find(s => s.id === submissionId); const task = data.tasks.find(t => t.id === s?.taskId);
  if (!s || !task) return <><PageHeader title="Submission" back="/submissions"/><EmptyState title="Submission not found"/></>;
