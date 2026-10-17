@@ -6,9 +6,29 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { categories } from '@/data/mock';
 import type { Submission, Task, TaskCategory } from '@/types';
 import planting from '@/assets/planting.jpg';
-export { planting };
+import civicRoad from '@/assets/civic-audit-road.png';
+import companyLogo from '@/assets/company-logo.png';
+export { planting, civicRoad, companyLogo };
 export const categoryIcons = { civic: Construction, green: Sprout, health: Heart, governance: Landmark };
-export function Brand({ compact = false }: { compact?: boolean }) { return <div className="brand"><span className="brand-mark"><Leaf size={22}/></span><span>SSS <span className="font-normal">Civic Tech</span>{!compact && <small>SMALL ACTIONS. SHARED IMPACT.</small>}</span></div>; }
+export function Brand({ compact = false }: { compact?: boolean }) {
+  return (
+    <div className="brand">
+      <span className="brand-mark">
+        <img
+          src={companyLogo}
+          alt="AI SAMRAT"
+          className="brand-logo-img"
+          width={1024}
+          height={344}
+        />
+      </span>
+      <span>
+        SSS <span className="font-normal">Civic Tech</span>
+        {!compact && <small>SMALL ACTIONS. SHARED IMPACT.</small>}
+      </span>
+    </div>
+  );
+}
 export function AppShell({ children }: { children: ReactNode }) {
  const path = useRouterState({ select: s => s.location.pathname });
  const hidden = ['/onboarding', '/login', '/consent', '/capture'].includes(path);
@@ -19,8 +39,69 @@ export function SectionTitle({ title, to, label = 'View all' }: { title: string;
 export function CategoryIcon({ category }: { category: TaskCategory }) { const Icon = categoryIcons[category]; return <span className={`category-icon category-${category}`}><Icon size={21}/></span>; }
 export function StatusChip({ status }: { status: Submission['status'] }) { const info = { under_review: { Icon: Clock3, label: 'Under review' }, approved: { Icon: CheckCircle2, label: 'Approved' }, rejected: { Icon: XCircle, label: 'Rejected' } }[status]; return <span className={`status-chip status-${status}`}><info.Icon size={12}/>{info.label}</span>; }
 export function Points({ amount }: { amount: number }) { return <span className="points-chip"><Sprout size={13}/><b>+{amount}</b> pts</span>; }
-export function TaskCard({ task, featured = false }: { task: Task; featured?: boolean }) { return <Link className={`task-card ${featured ? 'featured-task' : ''}`} to="/tasks/$taskId" params={{ taskId: task.id }}>{featured ? <div className="task-photo"><img src={planting} width={1024} height={768} alt="Neighbours planting a sapling together"/><span className="photo-label"><Sprout size={12}/> GREEN DRIVE</span></div> : <CategoryIcon category={task.category}/>}<div className="task-card-content"><div className="task-meta">{categories.find(c => c.id === task.category)?.short}<Points amount={task.points}/></div><h3>{task.title}</h3><div className="task-location"><MapPin size={12}/><span>{task.location}</span><span className="distance">{task.distance} km</span></div></div>{!featured && <ChevronRight className="task-chevron" size={16}/>}</Link>; }
-export function SubmissionRow({ submission, tasks }: { submission: Submission; tasks: Task[] }) { const task = tasks.find(t => t.id === submission.taskId); if (!task) return null; return <Link className="activity-row" to="/submissions/$submissionId" params={{ submissionId: submission.id }}><CategoryIcon category={task.category}/><div className="min-w-0 flex-1"><h3>{task.title}</h3><span className="row-date">{formatDate(submission.submittedAt)}</span></div><StatusChip status={submission.status}/></Link>; }
+export function TaskCard({ task, featured = false }: { task: Task; featured?: boolean }) {
+  const isRoad = task.id === 't2' || task.title === 'Report a road that needs care';
+  const photo = isRoad ? civicRoad : planting;
+  const alt = isRoad ? 'Citizen reporting a road that needs care' : 'Neighbours planting a sapling together';
+  return (
+    <Link className={`task-card ${featured ? 'featured-task' : ''}`} to="/tasks/$taskId" params={{ taskId: task.id }}>
+      {featured ? (
+        <div className="task-photo">
+          <img src={photo} width={1024} height={768} alt={alt}/>
+          {!isRoad && (
+            <span className="photo-label">
+              <Sprout size={12}/> GREEN DRIVE
+            </span>
+          )}
+        </div>
+      ) : (
+        <CategoryIcon category={task.category}/>
+      )}
+      <div className="task-card-content">
+        <div className="task-meta">
+          {categories.find(c => c.id === task.category)?.short}
+          <Points amount={task.points}/>
+        </div>
+        <h3>{task.title}</h3>
+        <div className="task-location">
+          <MapPin size={12}/>
+          <span>{task.location}</span>
+          <span className="distance">{task.distance} km</span>
+        </div>
+      </div>
+      {!featured && <ChevronRight className="task-chevron" size={16}/>}
+    </Link>
+  );
+}
+export function SubmissionRow({ submission, tasks }: { submission: Submission; tasks: Task[] }) {
+  const task = tasks.find(t => t.id === submission.taskId);
+  if (!task) return null;
+  const local = submission as Submission & { photoDataUrl?: string; latitude?: number; longitude?: number };
+  return (
+    <Link className="activity-row" to="/submissions/$submissionId" params={{ submissionId: submission.id }}>
+      {local.photoDataUrl ? (
+        <div style={{ width: 38, height: 38, borderRadius: 10, overflow: 'hidden', flexShrink: 0, border: '1px solid var(--border)' }}>
+          <img src={local.photoDataUrl} alt={task.title} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+        </div>
+      ) : (
+        <CategoryIcon category={task.category} />
+      )}
+      <div className="min-w-0 flex-1">
+        <h3>{task.title}</h3>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', marginTop: 2 }}>
+          <span className="row-date">{formatDate(submission.submittedAt)}</span>
+          {local.latitude !== undefined && local.longitude !== undefined && (
+            <span style={{ fontSize: 9, color: 'var(--primary)', display: 'inline-flex', alignItems: 'center', gap: 2 }}>
+              <MapPin size={9} />
+              {local.latitude >= 0 ? `${local.latitude.toFixed(4)}°N` : `${Math.abs(local.latitude).toFixed(4)}°S`}, {local.longitude >= 0 ? `${local.longitude.toFixed(4)}°E` : `${Math.abs(local.longitude).toFixed(4)}°W`}
+            </span>
+          )}
+        </div>
+      </div>
+      <StatusChip status={submission.status} />
+    </Link>
+  );
+}
 export function formatDate(value: string) { return new Date(value).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }); }
 export function EmptyState({ title = 'Nothing here just yet', message = 'Your next small action could make a big difference.', children }: { title?: string; message?: string; children?: ReactNode }) { return <div className="empty-state"><span><Sprout size={30}/></span><h2>{title}</h2><p>{message}</p>{children}</div>; }
 export function LoadingPage() { return <div className="page-content space-y-5 pt-6"><Skeleton className="h-12 w-3/4"/><Skeleton className="h-44 rounded-2xl"/><Skeleton className="h-7 w-1/2"/><Skeleton className="h-44 rounded-2xl"/><Skeleton className="h-24 rounded-2xl"/></div>; }

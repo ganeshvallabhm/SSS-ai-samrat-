@@ -12,11 +12,12 @@ export interface GeoState {
 
 export interface UseGeolocationReturn extends GeoState {
   retry: () => void;
+  getCurrentPosition: () => Promise<GeoState>;
   /** accuracy < 50m = good, < 100m = weak, else poor */
   quality: 'good' | 'weak' | 'poor' | 'locating';
   /** Human readable chip label */
   chipLabel: string;
-  /** Whether GPS is good enough to shoot (≤50 m) */
+  /** Whether GPS coordinates are available */
   readyToShoot: boolean;
 }
 
@@ -37,7 +38,82 @@ export function useGeolocation(): UseGeolocationReturn {
     locating: true,
   });
 
-  const startWatch = useCallback(() => {
+  const getCurrentPosition = useCallback((): Promise<GeoState> => {
+    return new Promise((resolve) => {
+      if (!navigator.geolocation) {
+        const fallback: GeoState = {
+          latitude: null,
+          longitude: null,
+          accuracy: null,
+          error: 'unavailable',
+          locating: false,
+        };
+        setGeo(fallback);
+        resolve(fallback);
+        return;
+      }
+
+      setGeo(s => ({ ...s, locating: true, error: null }));
+
+      navigator.geolocation.getCurrentPosition(
+        pos => {
+          const fresh: GeoState = {
+            latitude: pos.coords.latitude,
+            longitude: pos.coords.longitude,
+            accuracy: pos.coords.accuracy,
+            error: null,
+            locating: false,
+          };
+          setGeo(fresh);
+          resolve(fresh);
+        },
+        err => {
+          // If high accuracy timed out, retry with standard accuracy before giving up
+          if (err.code === err.TIMEOUT) {
+            navigator.geolocation.getCurrentPosition(
+              fallbackPos => {
+                const fresh: GeoState = {
+                  latitude: fallbackPos.coords.latitude,
+                  longitude: fallbackPos.coords.longitude,
+                  accuracy: fallbackPos.coords.accuracy,
+                  error: null,
+                  locating: false,
+                };
+                setGeo(fresh);
+                resolve(fresh);
+              },
+              fallbackErr => {
+                const failed: GeoState = {
+                  latitude: null,
+                  longitude: null,
+                  accuracy: null,
+                  error: mapGeoError(fallbackErr),
+                  locating: false,
+                };
+                setGeo(failed);
+                resolve(failed);
+              },
+              { enableHighAccuracy: false, timeout: 10_000, maximumAge: 30_000 }
+            );
+            return;
+          }
+
+          const failed: GeoState = {
+            latitude: null,
+            longitude: null,
+            accuracy: null,
+            error: mapGeoError(err),
+            locating: false,
+          };
+          setGeo(failed);
+          resolve(failed);
+        },
+        { enableHighAccuracy: true, timeout: 10_000, maximumAge: 5_000 }
+      );
+    });
+  }, []);
+
+  const startTracking = useCallback(() => {
     if (!navigator.geolocation) {
       setGeo(s => ({ ...s, error: 'unavailable', locating: false }));
       return;
@@ -47,38 +123,44 @@ export function useGeolocation(): UseGeolocationReturn {
       navigator.geolocation.clearWatch(watchIdRef.current);
     }
 
-    setGeo(s => ({ ...s, error: null, locating: true }));
+    // Call getCurrentPosition explicitly for prompt coordinates
+    void getCurrentPosition();
 
-    watchIdRef.current = navigator.geolocation.watchPosition(
-      pos => {
-        setGeo({
-          latitude: pos.coords.latitude,
-          longitude: pos.coords.longitude,
-          accuracy: pos.coords.accuracy,
-          error: null,
-          locating: false,
-        });
-      },
-      err => {
-        setGeo(s => ({ ...s, error: mapGeoError(err), locating: false }));
-      },
-      { enableHighAccuracy: true, timeout: 15_000, maximumAge: 5_000 },
-    );
-  }, []);
+    // Also watch position for real-time updates as user moves
+    try {
+      watchIdRef.current = navigator.geolocation.watchPosition(
+        pos => {
+          setGeo({
+            latitude: pos.coords.latitude,
+            longitude: pos.coords.longitude,
+            accuracy: pos.coords.accuracy,
+            error: null,
+            locating: false,
+          });
+        },
+        err => {
+          setGeo(s => ({ ...s, error: mapGeoError(err), locating: false }));
+        },
+        { enableHighAccuracy: true, timeout: 15_000, maximumAge: 5_000 },
+      );
+    } catch {
+      // Fallback if watchPosition fails
+    }
+  }, [getCurrentPosition]);
 
   useEffect(() => {
-    startWatch();
+    startTracking();
     return () => {
       if (watchIdRef.current !== null) {
         navigator.geolocation.clearWatch(watchIdRef.current);
         watchIdRef.current = null;
       }
     };
-  }, [startWatch]);
+  }, [startTracking]);
 
   const retry = useCallback(() => {
-    startWatch();
-  }, [startWatch]);
+    startTracking();
+  }, [startTracking]);
 
   const acc = geo.accuracy;
   const quality: UseGeolocationReturn['quality'] =
@@ -95,7 +177,7 @@ export function useGeolocation(): UseGeolocationReturn {
     : acc <= 100 ? `Weak GPS ±${Math.round(acc)} m`
     : `Poor GPS ±${Math.round(acc)} m`;
 
-  const readyToShoot = quality === 'good';
+  const readyToShoot = geo.latitude !== null && geo.longitude !== null;
 
-  return { ...geo, retry, quality, chipLabel, readyToShoot };
+  return { ...geo, retry, getCurrentPosition, quality, chipLabel, readyToShoot };
 }

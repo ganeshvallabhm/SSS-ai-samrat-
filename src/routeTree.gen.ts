@@ -17,6 +17,7 @@ import { Route as NotificationsRouteImport } from './routes/notifications'
 import { Route as OnboardingRouteImport } from './routes/onboarding'
 import { Route as ProfileRouteImport } from './routes/profile'
 import { Route as RedeemRouteImport } from './routes/redeem'
+import { Route as ReviewerRouteImport } from './routes/reviewer'
 import { Route as SubmissionsRouteImport } from './routes/submissions'
 import { Route as TasksRouteImport } from './routes/tasks'
 import { Route as WalletRouteImport } from './routes/wallet'
@@ -66,6 +67,11 @@ const ProfileRoute = ProfileRouteImport.update({
 const RedeemRoute = RedeemRouteImport.update({
   id: '/redeem',
   path: '/redeem',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ReviewerRoute = ReviewerRouteImport.update({
+  id: '/reviewer',
+  path: '/reviewer',
   getParentRoute: () => rootRouteImport,
 } as any)
 const SubmissionsRoute = SubmissionsRouteImport.update({
@@ -128,6 +134,7 @@ export interface FileRoutesByFullPath {
   '/onboarding': typeof OnboardingRoute
   '/profile': typeof ProfileRouteWithChildren
   '/redeem': typeof RedeemRoute
+  '/reviewer': typeof ReviewerRoute
   '/submissions': typeof SubmissionsRouteWithChildren
   '/tasks': typeof TasksRouteWithChildren
   '/wallet': typeof WalletRoute
@@ -147,6 +154,7 @@ export interface FileRoutesByTo {
   '/notifications': typeof NotificationsRoute
   '/onboarding': typeof OnboardingRoute
   '/redeem': typeof RedeemRoute
+  '/reviewer': typeof ReviewerRoute
   '/wallet': typeof WalletRoute
   '/profile/$topic': typeof ProfileTopicRoute
   '/redemptions/$redemptionId': typeof RedemptionsRedemptionIdRoute
@@ -166,6 +174,7 @@ export interface FileRoutesById {
   '/onboarding': typeof OnboardingRoute
   '/profile': typeof ProfileRouteWithChildren
   '/redeem': typeof RedeemRoute
+  '/reviewer': typeof ReviewerRoute
   '/submissions': typeof SubmissionsRouteWithChildren
   '/tasks': typeof TasksRouteWithChildren
   '/wallet': typeof WalletRoute
@@ -188,6 +197,7 @@ export interface FileRouteTypes {
     | '/onboarding'
     | '/profile'
     | '/redeem'
+    | '/reviewer'
     | '/submissions'
     | '/tasks'
     | '/wallet'
@@ -207,6 +217,7 @@ export interface FileRouteTypes {
     | '/notifications'
     | '/onboarding'
     | '/redeem'
+    | '/reviewer'
     | '/wallet'
     | '/profile/$topic'
     | '/redemptions/$redemptionId'
@@ -225,6 +236,7 @@ export interface FileRouteTypes {
     | '/onboarding'
     | '/profile'
     | '/redeem'
+    | '/reviewer'
     | '/submissions'
     | '/tasks'
     | '/wallet'
@@ -246,6 +258,7 @@ export interface RootRouteChildren {
   OnboardingRoute: typeof OnboardingRoute
   ProfileRoute: typeof ProfileRouteWithChildren
   RedeemRoute: typeof RedeemRoute
+  ReviewerRoute: typeof ReviewerRoute
   SubmissionsRoute: typeof SubmissionsRouteWithChildren
   TasksRoute: typeof TasksRouteWithChildren
   WalletRoute: typeof WalletRoute
@@ -308,6 +321,13 @@ declare module '@tanstack/react-router' {
       path: '/redeem'
       fullPath: '/redeem'
       preLoaderRoute: typeof RedeemRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/reviewer': {
+      id: '/reviewer'
+      path: '/reviewer'
+      fullPath: '/reviewer'
+      preLoaderRoute: typeof ReviewerRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/submissions': {
@@ -431,6 +451,7 @@ const rootRouteChildren: RootRouteChildren = {
   OnboardingRoute: OnboardingRoute,
   ProfileRoute: ProfileRouteWithChildren,
   RedeemRoute: RedeemRoute,
+  ReviewerRoute: ReviewerRoute,
   SubmissionsRoute: SubmissionsRouteWithChildren,
   TasksRoute: TasksRouteWithChildren,
   WalletRoute: WalletRoute,

@@ -3,13 +3,117 @@ import { useQueryClient, useSuspenseQuery } from '@tanstack/react-query';
 import { useState } from 'react';
 import { ArrowDownLeft, ArrowUpRight, Check, Copy, Eye, EyeOff, Gift, LockKeyhole, ShieldCheck, Sprout, X } from 'lucide-react';
 import * as Dialog from '@radix-ui/react-dialog';
-import { canRedeem, redeemVoucher, snapshotOptions } from '@/api';
+import { canRedeem, redeemVoucher, snapshotOptions, MONTHLY_CAP, monthlyProgress, isBackendMode } from '@/api';
 import { Button } from '@/components/ui/button';
 import { EmptyState, PageHeader, formatDate, VerifiedNote } from '@/components/civic/shared';
 import type { Redemption, Voucher } from '@/types';
 export function WalletPage() {
- const { data } = useSuspenseQuery(snapshotOptions); const [tab, setTab] = useState('history');
- return <><PageHeader title="My wallet"/><div className="page-content"><section className="wallet-hero"><span className="wallet-hero-icon"><Sprout size={28}/></span><p>Your civic points</p><h1>{data.user.balance}<span>points</span></h1><Button asChild variant="secondary"><Link to="/redeem"><Gift/>Redeem rewards<ArrowUpRight/></Link></Button><VerifiedNote>Earned with purpose. Rewarded with care.</VerifiedNote></section><div className="info-note"><LockKeyhole size={18}/><p>Points can't be transferred or exchanged for cash</p></div><div className="segmented-control"><Button variant={tab === 'history' ? 'default' : 'ghost'} onClick={() => setTab('history')}>Points History</Button><Button variant={tab === 'redemptions' ? 'default' : 'ghost'} onClick={() => setTab('redemptions')}>Redemptions</Button></div>{tab === 'history' ? <div className="ledger-list">{data.transactions.map(p => <div className="ledger-row" key={p.id}><span className={`ledger-icon ${p.type}`} >{p.type === 'earned' ? <ArrowDownLeft size={19}/> : <Gift size={19}/>}</span><div><h3>{p.title}</h3><span>{formatDate(p.date)}</span></div><strong className={p.type === 'earned' ? 'earned-text' : ''}>{p.points > 0 ? '+' : '−'}{Math.abs(p.points)}<small>points</small></strong></div>)}</div> : <div className="redemption-list">{data.redemptions.map(r => <Link key={r.id} to="/redemptions/$redemptionId" params={{ redemptionId: r.id }} className="redemption-row"><Merchant brand={r.brand}/><div><h3>{r.brand} ₹{r.value}</h3><span>{formatDate(r.redeemedAt)}</span></div><ArrowUpRight size={18}/></Link>)}{!data.redemptions.length && <EmptyState title="Your first reward is waiting" message="Turn your verified points into a gift voucher."><Button asChild><Link to="/redeem">Explore rewards</Link></Button></EmptyState>}</div>}</div></>;
+  const { data } = useSuspenseQuery(snapshotOptions);
+  const [tab, setTab] = useState('history');
+  const backendActive = isBackendMode();
+  return (
+    <>
+      <PageHeader title="My wallet" />
+      <div className="page-content">
+        <section className="wallet-hero">
+          <span className="wallet-hero-icon"><Sprout size={28} /></span>
+          <p>Your civic points</p>
+          <h1>{data.user.balance.toLocaleString('en-IN')}<span>points</span></h1>
+          
+          <div className="wallet-monthly-box">
+            <div className="monthly-line">
+              <span>Earned this month</span>
+              <span><b>{data.user.monthlyPoints}</b> / {MONTHLY_CAP} pts</span>
+            </div>
+            <div
+              className="monthly-track"
+              role="progressbar"
+              aria-label="Monthly points"
+              aria-valuenow={data.user.monthlyPoints}
+              aria-valuemin={0}
+              aria-valuemax={MONTHLY_CAP}
+            >
+              <div style={{ width: `${monthlyProgress(data.user.monthlyPoints)}%` }} />
+            </div>
+            <div className="wallet-monthly-sub">
+              <span>Monthly limit: {MONTHLY_CAP} points</span>
+              <span>{Math.max(0, MONTHLY_CAP - data.user.monthlyPoints)} pts remaining</span>
+            </div>
+          </div>
+
+          <Button asChild variant="secondary">
+            <Link to="/redeem"><Gift />Redeem rewards<ArrowUpRight /></Link>
+          </Button>
+          <VerifiedNote>Earned with purpose. Rewarded with care.</VerifiedNote>
+        </section>
+
+        <div className="info-note">
+          <LockKeyhole size={18} />
+          <p>Points can't be transferred or exchanged for cash</p>
+        </div>
+
+        <div className="segmented-control">
+          <Button variant={tab === 'history' ? 'default' : 'ghost'} onClick={() => setTab('history')}>
+            Points History
+          </Button>
+          <Button variant={tab === 'redemptions' ? 'default' : 'ghost'} onClick={() => setTab('redemptions')}>
+            Redemptions
+          </Button>
+        </div>
+
+        {tab === 'history' ? (
+          <div className="ledger-list">
+            <div className="demo-badge-row">
+              <span className={`demo-tag ${backendActive ? 'bg-emerald-600 text-white' : ''}`}>
+                {backendActive ? 'LIVE DATABASE' : 'DEMO DATA'}
+              </span>
+              <span>
+                {backendActive
+                  ? 'Authoritative PostgreSQL points ledger'
+                  : 'Verified historical community actions'}
+              </span>
+            </div>
+            {data.transactions.map(p => (
+              <div className="ledger-row" key={p.id}>
+                <span className={`ledger-icon ${p.type}`}>
+                  {p.type === 'earned' ? <ArrowDownLeft size={19} /> : <Gift size={19} />}
+                </span>
+                <div>
+                  <h3>{p.title}</h3>
+                  <span>{formatDate(p.date)}</span>
+                </div>
+                <strong className={p.type === 'earned' ? 'earned-text' : ''}>
+                  {p.points > 0 ? '+' : '−'}{Math.abs(p.points)}<small>points</small>
+                </strong>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="redemption-list">
+            <div className="demo-badge-row">
+              <span className="demo-tag">DEMO VOUCHERS</span>
+              <span>Non-transferable partner vouchers</span>
+            </div>
+            {data.redemptions.map(r => (
+              <Link key={r.id} to="/redemptions/$redemptionId" params={{ redemptionId: r.id }} className="redemption-row">
+                <Merchant brand={r.brand} />
+                <div>
+                  <h3>{r.brand} ₹{r.value}</h3>
+                  <span>{formatDate(r.redeemedAt)}</span>
+                </div>
+                <ArrowUpRight size={18} />
+              </Link>
+            ))}
+            {!data.redemptions.length && (
+              <EmptyState title="Your first reward is waiting" message="Turn your verified points into a gift voucher.">
+                <Button asChild><Link to="/redeem">Explore rewards</Link></Button>
+              </EmptyState>
+            )}
+          </div>
+        )}
+      </div>
+    </>
+  );
 }
 export function Merchant({ brand }: { brand: Redemption['brand'] }) { return <span className={`merchant merchant-${brand.toLowerCase()}`} aria-label={brand}>{brand === 'Amazon' ? <span className="amazon-letter">a<span>⌣</span></span> : <span className="flipkart-letter">f</span>}</span>; }
 export function RedeemPage() {

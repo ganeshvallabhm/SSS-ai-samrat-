@@ -401,6 +401,41 @@ paths:
                 $ref: '#/components/schemas/SubmissionDetail'
         '401':
           $ref: '#/components/responses/401Unauthorized'
+  /submissions/{submissionId}/photo:
+    get:
+      tags: [Submissions]
+      summary: Download submission photo
+      description: Returns the raw photo associated with the submission.
+      operationId: getSubmissionPhoto
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: submissionId
+          in: path
+          required: true
+          schema:
+            type: string
+          example: s3
+      responses:
+        '200':
+          description: Photo binary image file
+          content:
+            image/jpeg:
+              schema:
+                type: string
+                format: binary
+            image/png:
+              schema:
+                type: string
+                format: binary
+            image/webp:
+              schema:
+                type: string
+                format: binary
+        '401':
+          $ref: '#/components/responses/401Unauthorized'
+        '403':
+          $ref: '#/components/responses/403Forbidden'
         '404':
           $ref: '#/components/responses/404NotFound'
 

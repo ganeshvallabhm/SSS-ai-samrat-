@@ -194,4 +194,155 @@ Key constraints enforced at the database level:
 - Monthly earning cap computed in IST (`Asia/Kolkata`) timezone
 - Redemptions require an `idempotency_key` UUID (UNIQUE constraint)
 - GPS accuracy enforced: `accuracy_m <= 50m` (CHECK constraint)
+- `points_ledger` is append-only (trigger `trg_ledger_immutable`)
+- Monthly earning cap computed in IST (`Asia/Kolkata`) timezone
+- Redemptions require an `idempotency_key` UUID (UNIQUE constraint)
+- GPS accuracy enforced: `accuracy_m <= 50m` (CHECK constraint)
 - Phone numbers: 10-digit Indian mobile format (regex CHECK)
+
+---
+
+## Authentication Flow
+
+All auth endpoints are under `/api/v1/auth/`. Phone numbers are accepted as `+91XXXXXXXXXX`, `91XXXXXXXXXX`, or `XXXXXXXXXX` (10 digits). Indian numbers only (prefix 6–9).
+
+### OTP Request + Verify
+
+```
+Client                                 API
+  │                                     │
+  │  POST /auth/otp/request             │
+  │  { "phone": "+919876543210" }       │
+  │ ──────────────────────────────────► │
+  │                                     │── generate CSPRNG 6-digit code
+  │                                     │── store HMAC-SHA256(code, OTP_HMAC_SECRET)
+  │                                     │── send via SmsProvider
+  │  200 { message, expiresInSeconds }  │
+  │ ◄────────────────────────────────── │
+  │                                     │
+  │  POST /auth/otp/verify              │
+  │  { "phone": "...", "code": "..." }  │
+  │ ──────────────────────────────────► │
+  │                                     │── constant-time compare(HMAC(code), stored)
+  │                                     │── upsert user (citizen on first verify)
+  │                                     │── issue JWT access token (15 min)
+  │                                     │── issue opaque refresh token (30 days)
+  │  200 { user, accessToken, ...}      │
+  │ ◄────────────────────────────────── │
+```
+
+**Security properties:**
+- Plain OTP code is **never stored or logged** — only `HMAC-SHA256(code, OTP_HMAC_SECRET)`
+- Constant-time comparison prevents timing attacks
+- 30-second per-phone cooldown (R-017)
+- 5 max attempts per OTP row; 6th returns 401 without incrementing (R-018)
+- 10 OTP requests per hour per IP (replaceable service in `app/services/otp.py`)
+- Same response shape for existing and non-existing phone numbers (no user enumeration)
+- OTP expires after `OTP_TTL_SECONDS` seconds (default 5 min, R-034)
+- Single-use: `used_at` is set on success (R-035)
+
+### Token Lifecycle
+
+| Operation | Endpoint | Effect |
+|---|---|---|
+| Login | `POST /auth/otp/verify` | Issues access + refresh tokens |
+| Refresh | `POST /auth/refresh` | Rotates: revokes old, issues new |
+| Logout | `POST /auth/logout` | Revokes supplied refresh token |
+| Reuse detection | `POST /auth/refresh` | If revoked token presented, ALL tokens for that user are revoked → 401 |
+
+**JWT access token** (`Authorization: Bearer <token>`):
+- Claims: `sub` (user UUID), `role`, `jti` (unique per token)
+- TTL: `JWT_ACCESS_TTL_SECONDS` (default 900 s / 15 min)
+
+**Refresh token** (opaque, URL-safe random string):
+- Only `SHA-256(token)` stored in `refresh_tokens.token_hash`
+- TTL: `JWT_REFRESH_TTL_DAYS` (default 30 days)
+- Rotation: each refresh creates a new row and revokes the old one
+
+### Role-Based Access Control
+
+| Role | Created via | Access |
+|---|---|---|
+| `citizen` | First OTP verify (public API) | Own submissions, wallet, vouchers |
+| `reviewer` | `scripts/create_staff.py` only | Review queue, approve/reject |
+| `admin` | `scripts/create_staff.py` only | KPIs, analytics |
+
+Middleware: `get_current_user` dependency (401 on invalid/missing/expired token).  
+Factory: `require_role("reviewer")` (403 on wrong role).
+
+---
+
+## Staff Management (`create_staff.py`)
+
+Reviewer and admin accounts are **never** created through the public API.
+Use this script (run inside the api container):
+
+```bash
+# Create a reviewer account
+wsl docker compose exec api python scripts/create_staff.py \
+  --phone 9876543210 \
+  --name "Priya Sharma" \
+  --role reviewer
+
+# Create an admin account
+wsl docker compose exec api python scripts/create_staff.py \
+  --phone 9876543211 \
+  --name "Admin User" \
+  --role admin
+```
+
+**Rules:**
+- `--phone` must be exactly 10 digits (no +91 prefix)
+- `--role` must be `reviewer` or `admin`
+- If the phone already exists as a citizen, the script refuses (prevents accidental escalation)
+- If the phone already exists as reviewer/admin, the name/role is updated
+
+---
+
+## Environment Variables
+
+| Variable | Description | Default |
+|---|---|---|
+| `DATABASE_URL` | Async PostgreSQL URL (`postgresql+asyncpg://...`) | — |
+| `DATABASE_URL_SYNC` | Sync URL for Alembic (`postgresql+psycopg2://...`) | — |
+| `JWT_SECRET` | HS256 signing key (≥32 chars) | — |
+| `JWT_ACCESS_TTL_SECONDS` | Access token lifetime (seconds) | `900` |
+| `JWT_REFRESH_TTL_DAYS` | Refresh token lifetime (days) | `30` |
+| `OTP_HMAC_SECRET` | HMAC-SHA256 key for OTP hashing — generate with:<br>`python -c "import secrets; print(secrets.token_hex(32))"` | — |
+| `OTP_TTL_SECONDS` | OTP expiry (seconds) | `300` |
+| `OTP_MAX_ATTEMPTS` | Max wrong OTP attempts per row | `5` |
+| `OTP_COOLDOWN_SECONDS` | Per-phone resend cooldown | `30` |
+| `OTP_IP_LIMIT_PER_HOUR` | Per-IP OTP requests per hour | `10` |
+| `VOUCHER_ENCRYPTION_KEY` | AES-256-GCM key (hex, 64 chars) | — |
+| `UPLOAD_DIR` | Photo upload directory | `./uploads` |
+| `ENVIRONMENT` | `development` \| `production` | `development` |
+
+> **Never commit `.env`**. Only commit `.env.example` with placeholder values.
+> In `ENVIRONMENT=production` the app **refuses to start** with MockSmsProvider.
+
+---
+
+## SMS Provider
+
+`app/services/sms.py` defines `SmsProvider` (abstract) and `MockSmsProvider` (development).
+
+- **Development**: `MockSmsProvider` accepts any 6-digit code **except** `000000` (always-fail sentinel for tests)
+- **Production**: Wire a real SMS provider by implementing `SmsProvider.send_otp()` and updating `get_sms_provider()`
+- The app calls `get_sms_provider(settings.ENVIRONMENT)` at startup; in production it raises `RuntimeError` if only mock is available
+
+---
+
+## Audit Log
+
+Every auth event writes to `audit_log`:
+
+| Action | Trigger |
+|---|---|
+| `otp_requested` | Successful OTP dispatch |
+| `login_success` | Successful OTP verify + token issue |
+| `login_failed` | Invalid/expired/used OTP |
+| `token_refreshed` | Successful refresh rotation |
+| `token_reuse_detected` | Revoked refresh token presented again |
+| `logout` | Explicit logout |
+
+OTP codes and tokens are **never** stored in `audit_log.details`.

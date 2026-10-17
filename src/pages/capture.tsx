@@ -26,8 +26,13 @@ import { Button } from '@/components/ui/button';
 import { Brand } from '@/components/civic/shared';
 import { useCamera } from '@/hooks/useCamera';
 import { useGeolocation } from '@/hooks/useGeolocation';
-import { submissionStore, type LocalSubmission } from '@/lib/submissionStore';
-import type { TaskCategory } from '@/types';
+import { snapshotOptions, isBackendMode, createBackendSubmission } from '@/api';
+import { useSuspenseQuery } from '@tanstack/react-query';
+import type { Task, TaskCategory } from '@/types';
+import civicAuditImg from '@/assets/civic-audit.png';
+import greenDriveImg from '@/assets/green-drive.png';
+import healthCampImg from '@/assets/health-camp.png';
+import localGovernanceImg from '@/assets/local-governance.png';
 
 /* ─────────────────────────── Types ─────────────────────────── */
 
@@ -38,13 +43,14 @@ interface CaptureCategory {
   label: string;
   description: string;
   Icon: React.ComponentType<{ size?: number }>;
+  image: string;
 }
 
 const CATEGORIES: CaptureCategory[] = [
-  { id: 'civic', label: 'Civic Audit', description: 'Potholes, broken lights, road damage', Icon: Construction },
-  { id: 'green', label: 'Green Drive', description: 'Tree planting, clean-up, waste', Icon: Sprout },
-  { id: 'health', label: 'Health Camp', description: 'Blood donation, health volunteering', Icon: Heart },
-  { id: 'governance', label: 'Local Governance', description: 'Public amenities, ward surveys', Icon: Landmark },
+  { id: 'civic', label: 'Civic Audit', description: 'Potholes, broken lights, road damage', Icon: Construction, image: civicAuditImg },
+  { id: 'green', label: 'Green Drive', description: 'Tree planting, clean-up, waste', Icon: Sprout, image: greenDriveImg },
+  { id: 'health', label: 'Health Camp', description: 'Blood donation, health volunteering', Icon: Heart, image: healthCampImg },
+  { id: 'governance', label: 'Local Governance', description: 'Public amenities, ward surveys', Icon: Landmark, image: localGovernanceImg },
 ];
 
 const TASK_IDS: Record<TaskCategory, string> = {
@@ -57,9 +63,34 @@ const TASK_IDS: Record<TaskCategory, string> = {
 /* ─────────────────────────── Main page ─────────────────────────── */
 
 export function CapturePage() {
-  const [step, setStep] = useState<Step>('category');
-  const [category, setCategory] = useState<CaptureCategory | null>(null);
+  const { data } = useSuspenseQuery(snapshotOptions);
+
+  // Read optional taskId from URL parameters if citizen entered from a specific task page
+  const searchParams = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : null;
+  const urlTaskId = searchParams?.get('taskId') ?? undefined;
+
+  const initialTask = urlTaskId ? (data.tasks.find(t => t.id === urlTaskId) ?? null) : null;
+  const initialCategory = initialTask
+    ? (CATEGORIES.find(c => c.id === initialTask.category) ?? null)
+    : null;
+
+  const [step, setStep] = useState<Step>(initialTask ? 'explainer' : 'category');
+  const [selectedTask, setSelectedTask] = useState<Task | null>(initialTask);
+  const [category, setCategory] = useState<CaptureCategory | null>(initialCategory);
   const [capturedDataUrl, setCapturedDataUrl] = useState<string | null>(null);
+  const [capturedGeo, setCapturedGeo] = useState<{
+    latitude: number | null;
+    longitude: number | null;
+    accuracy: number | null;
+    error: ReturnType<typeof useGeolocation>['error'];
+    locating: boolean;
+  }>({
+    latitude: null,
+    longitude: null,
+    accuracy: null,
+    error: null,
+    locating: false,
+  });
   const [note, setNote] = useState('');
   const [address, setAddress] = useState('');
   const [newSubmissionId, setNewSubmissionId] = useState<string | null>(null);
@@ -86,6 +117,10 @@ export function CapturePage() {
 
   const handleCategorySelect = (cat: CaptureCategory) => {
     setCategory(cat);
+    const matchingTask = data.tasks.find(t => t.id === TASK_IDS[cat.id]) || data.tasks.find(t => t.category === cat.id);
+    if (matchingTask) {
+      setSelectedTask(matchingTask);
+    }
     setStep('explainer');
   };
 
@@ -95,17 +130,51 @@ export function CapturePage() {
   };
 
   const handleCapture = async () => {
-    if (!geo.readyToShoot) return;
+    if (!cam.ready) return;
+
+    const curLat = geo.latitude;
+    const curLng = geo.longitude;
+    const curAcc = geo.accuracy;
+    const curErr = geo.error;
+    const curLoc = geo.locating;
+
     const now = new Date();
     const dateStr = now.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
     const timeStr = now.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
-    const lat = geo.latitude?.toFixed(5) ?? '—';
-    const lng = geo.longitude?.toFixed(5) ?? '—';
-    const watermark = `${dateStr}  ${timeStr}\n${lat}, ${lng}`;
+    const watermark = curLat !== null && curLng !== null
+      ? `${dateStr}  ${timeStr}\n${curLat.toFixed(5)}, ${curLng.toFixed(5)}`
+      : `${dateStr}  ${timeStr}`;
+
     const dataUrl = await cam.captureFrame(watermark);
     if (dataUrl) {
       setCapturedDataUrl(dataUrl);
+      setCapturedGeo({
+        latitude: curLat,
+        longitude: curLng,
+        accuracy: curAcc,
+        error: curErr,
+        locating: curLoc,
+      });
       setStep('preview');
+
+      // If location wasn't available yet or was still locating, trigger getCurrentPosition
+      if (curLat === null && !curErr) {
+        setCapturedGeo(prev => ({ ...prev, locating: true }));
+        geo.getCurrentPosition().then(fresh => {
+          setCapturedGeo({
+            latitude: fresh.latitude,
+            longitude: fresh.longitude,
+            accuracy: fresh.accuracy,
+            error: fresh.error,
+            locating: false,
+          });
+          if (fresh.latitude !== null && fresh.longitude !== null && !address) {
+            void reverseGeocode(fresh.latitude, fresh.longitude).then(a => {
+              if (a) setAddress(a);
+            });
+          }
+        });
+      }
     }
   };
 
@@ -115,33 +184,92 @@ export function CapturePage() {
 
   const handleRetake = () => {
     setCapturedDataUrl(null);
+    setCapturedGeo({
+      latitude: null,
+      longitude: null,
+      accuracy: null,
+      error: null,
+      locating: false,
+    });
     setStep('viewfinder');
     void cam.startCamera(cam.facingMode);
   };
 
-  const handleSubmit = () => {
-    const id = `cap-${crypto.randomUUID().slice(0, 8)}`;
-    const now = new Date().toISOString();
-    const submission: LocalSubmission = {
-      id,
-      taskId: TASK_IDS[category?.id ?? 'civic'],
-      status: 'under_review',
-      submittedAt: now,
-      ...(capturedDataUrl ? { photoDataUrl: capturedDataUrl } : {}),
-      ...(note.trim() ? { note: note.trim() } : {}),
-      ...(address ? { address } : {}),
-    };
+  const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
 
-    submissionStore.add(submission);
-    setNewSubmissionId(id);
-    setStep('success');
+  const handleSubmit = async () => {
+    // Prevent submission if already submitting or if no photo or valid location is available
+    if (submitting || !capturedDataUrl || capturedGeo.latitude === null || capturedGeo.longitude === null) {
+      return;
+    }
+
+    setSubmitting(true);
+    setSubmitError(null);
+
+    const finalTaskId = selectedTask?.id ?? TASK_IDS[category?.id ?? 'civic'];
+    const finalCategory = (selectedTask?.category || category?.id || 'civic') as TaskCategory;
+
+    try {
+      if (isBackendMode()) {
+        const backendSub = await createBackendSubmission({
+          photoDataUrl: capturedDataUrl,
+          lat: capturedGeo.latitude,
+          lng: capturedGeo.longitude,
+          accuracy: capturedGeo.accuracy ?? 10.0,
+          categoryId: finalCategory,
+          taskId: finalTaskId,
+          note: note.trim() || undefined,
+          address: address || undefined,
+        });
+
+        setNewSubmissionId(backendSub.id);
+        setStep('success');
+      } else {
+        const id = `cap-${crypto.randomUUID().slice(0, 8)}`;
+        const now = new Date().toISOString();
+        const finalTaskTitle = selectedTask?.title ?? (data.tasks.find(t => t.id === finalTaskId)?.title || category?.label || 'Civic Task');
+
+        const submission: LocalSubmission = {
+          id,
+          taskId: finalTaskId,
+          taskTitle: finalTaskTitle,
+          category: finalCategory,
+          status: 'under_review',
+          submittedAt: now,
+          photoDataUrl: capturedDataUrl,
+          latitude: capturedGeo.latitude,
+          longitude: capturedGeo.longitude,
+          accuracy: capturedGeo.accuracy ?? undefined,
+          ...(note.trim() ? { note: note.trim() } : {}),
+          ...(address ? { address } : {}),
+        };
+
+        const saved = submissionStore.add(submission);
+        setNewSubmissionId(saved.id);
+        setStep('success');
+      }
+    } catch (err: any) {
+      setSubmitError(err?.message || 'Failed to submit report. Please check location and try again.');
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   const handleDoAnother = () => {
     setStep('category');
+    setSelectedTask(null);
     setCategory(null);
     setCapturedDataUrl(null);
+    setCapturedGeo({
+      latitude: null,
+      longitude: null,
+      accuracy: null,
+      error: null,
+      locating: false,
+    });
     setNote('');
+    setAddress('');
     setNewSubmissionId(null);
   };
 
@@ -151,7 +279,12 @@ export function CapturePage() {
         <CategoryStep onSelect={handleCategorySelect} />
       )}
       {step === 'explainer' && category && (
-        <ExplainerStep category={category} onBack={() => setStep('category')} onContinue={handleStartCamera} />
+        <ExplainerStep
+          category={category}
+          selectedTask={selectedTask}
+          onBack={() => initialTask ? window.history.back() : setStep('category')}
+          onContinue={handleStartCamera}
+        />
       )}
       {step === 'viewfinder' && category && (
         <ViewfinderStep
@@ -165,6 +298,8 @@ export function CapturePage() {
       {step === 'preview' && capturedDataUrl && (
         <PreviewStep
           dataUrl={capturedDataUrl}
+          geo={capturedGeo}
+          address={address}
           onRetake={handleRetake}
           onUse={handleUsePhoto}
         />
@@ -173,9 +308,12 @@ export function CapturePage() {
         <DetailsStep
           dataUrl={capturedDataUrl}
           category={category}
-          geo={geo}
+          selectedTask={selectedTask}
+          geo={capturedGeo}
           address={address}
           note={note}
+          submitting={submitting}
+          submitError={submitError}
           onNoteChange={setNote}
           onBack={() => setStep('preview')}
           onSubmit={handleSubmit}
@@ -184,6 +322,7 @@ export function CapturePage() {
       {step === 'success' && newSubmissionId && (
         <SuccessStep
           submissionId={newSubmissionId}
+          selectedTask={selectedTask}
           onDoAnother={handleDoAnother}
         />
       )}
@@ -215,12 +354,24 @@ function CategoryStep({ onSelect }: { onSelect: (cat: CaptureCategory) => void }
               onClick={() => onSelect(cat)}
               aria-label={cat.label}
             >
-              <span className={`category-icon category-${cat.id}`} style={{ width: 52, height: 52, borderRadius: 16 }}>
-                <cat.Icon size={26} />
-              </span>
-              <strong>{cat.label}</strong>
-              <span>{cat.description}</span>
-              <ChevronRight size={15} className="pick-chevron" />
+              <div className="category-thumb-wrap">
+                <img
+                  src={cat.image}
+                  alt={cat.label}
+                  className="category-thumb"
+                  width={144}
+                  height={144}
+                  loading="eager"
+                />
+                <span className={`category-thumb-badge category-${cat.id}`}>
+                  <cat.Icon size={13} />
+                </span>
+              </div>
+              <div className="category-pick-info">
+                <strong>{cat.label}</strong>
+                <span className="category-desc">{cat.description}</span>
+              </div>
+              <ChevronRight size={16} className="pick-chevron" />
             </button>
           ))}
         </div>
@@ -233,10 +384,12 @@ function CategoryStep({ onSelect }: { onSelect: (cat: CaptureCategory) => void }
 
 function ExplainerStep({
   category,
+  selectedTask,
   onBack,
   onContinue,
 }: {
   category: CaptureCategory;
+  selectedTask: Task | null;
   onBack: () => void;
   onContinue: () => void;
 }) {
@@ -250,12 +403,12 @@ function ExplainerStep({
         <div style={{ width: 44 }} />
       </header>
       <div className="page-content explainer-content">
-        <span className={`category-icon category-${category.id}`} style={{ width: 72, height: 72, borderRadius: 20, marginBottom: 24 }}>
+        <span className={`category-icon category-${category.id}`} style={{ width: 72, height: 72, borderRadius: 20, marginBottom: 20 }}>
           <category.Icon size={34} />
         </span>
-        <span className="eyebrow">BEFORE WE START</span>
-        <h1 style={{ fontSize: 26, fontWeight: 650, lineHeight: 1.35, margin: '10px 0 14px' }}>
-          We'll use your camera and location
+        <span className="eyebrow">{selectedTask ? 'TASK VERIFICATION' : 'BEFORE WE START'}</span>
+        <h1 style={{ fontSize: 24, fontWeight: 650, lineHeight: 1.35, margin: '8px 0 14px' }}>
+          {selectedTask ? `Submit proof for ${selectedTask.title}` : "We'll use your camera and location"}
         </h1>
         <div className="explainer-items">
           {[
@@ -336,6 +489,9 @@ function ViewfinderStep({
         autoPlay
         style={videoStyle}
         aria-label="Live camera viewfinder"
+        onLoadedMetadata={e => {
+          e.currentTarget.play().catch(() => {});
+        }}
       />
 
       {/* Grid overlay */}
@@ -396,14 +552,19 @@ function ViewfinderStep({
             id="shutter-btn"
             className="vf-shutter"
             aria-label="Take photo"
-            disabled={!cam.ready || !geo.readyToShoot}
+            disabled={!cam.ready}
             onClick={onCapture}
           >
             <span className="vf-shutter-inner" />
           </button>
-          {!geo.readyToShoot && cam.ready && (
+          {cam.ready && geo.locating && (
             <p className="vf-shutter-hint">
-              {geo.locating ? 'Waiting for GPS…' : 'Need GPS ≤ 50 m accuracy'}
+              Acquiring GPS location…
+            </p>
+          )}
+          {cam.ready && geo.error && (
+            <p className="vf-shutter-hint">
+              GPS unavailable
             </p>
           )}
         </div>
@@ -501,13 +662,25 @@ function CameraErrorScreen({
 
 function PreviewStep({
   dataUrl,
+  geo,
+  address,
   onRetake,
   onUse,
 }: {
   dataUrl: string;
+  geo: {
+    latitude: number | null;
+    longitude: number | null;
+    accuracy: number | null;
+    error: ReturnType<typeof useGeolocation>['error'];
+    locating: boolean;
+  };
+  address: string;
   onRetake: () => void;
   onUse: () => void;
 }) {
+  const hasCoords = geo.latitude !== null && geo.longitude !== null;
+
   return (
     <div className="capture-page preview-page">
       <header className="capture-header">
@@ -520,6 +693,51 @@ function PreviewStep({
       <div className="preview-img-wrap">
         <img src={dataUrl} alt="Captured photo preview" className="preview-img" />
       </div>
+
+      {/* GPS coordinates & accuracy directly below the captured photo */}
+      <div className="preview-gps-bar" id="preview-gps-bar">
+        {geo.locating ? (
+          <div className="preview-gps-status preview-gps-status--loading">
+            <Loader2 size={16} className="spin" />
+            <span>Acquiring GPS location…</span>
+          </div>
+        ) : geo.error === 'denied' ? (
+          <div className="preview-gps-status preview-gps-status--error">
+            <AlertTriangle size={16} />
+            <div>
+              <strong>GPS access denied</strong>
+              <span>Location permission was denied in your browser</span>
+            </div>
+          </div>
+        ) : geo.error || !hasCoords ? (
+          <div className="preview-gps-status preview-gps-status--error">
+            <WifiOff size={16} />
+            <div>
+              <strong>GPS coordinates unavailable</strong>
+              <span>Unable to obtain location fix for this photo</span>
+            </div>
+          </div>
+        ) : (
+          <div className="preview-gps-status preview-gps-status--success">
+            <MapPin size={18} className="preview-gps-pin" />
+            <div className="preview-gps-details">
+              <div className="preview-gps-coords">
+                <span className="preview-gps-latlng">
+                  {geo.latitude! >= 0 ? `${geo.latitude!.toFixed(5)}° N` : `${Math.abs(geo.latitude!).toFixed(5)}° S`},{' '}
+                  {geo.longitude! >= 0 ? `${geo.longitude!.toFixed(5)}° E` : `${Math.abs(geo.longitude!).toFixed(5)}° W`}
+                </span>
+                {geo.accuracy !== null && (
+                  <span className="preview-gps-accuracy">
+                    ±{Math.round(geo.accuracy)} m accuracy
+                  </span>
+                )}
+              </div>
+              {address && <span className="preview-gps-address">{address}</span>}
+            </div>
+          </div>
+        )}
+      </div>
+
       <div className="preview-actions">
         <Button variant="outline" onClick={onRetake} className="preview-btn">
           <RotateCcw size={16} /> Retake
@@ -537,34 +755,47 @@ function PreviewStep({
 function DetailsStep({
   dataUrl,
   category,
+  selectedTask,
   geo,
   address,
   note,
+  submitting = false,
+  submitError = null,
   onNoteChange,
   onBack,
   onSubmit,
 }: {
   dataUrl: string;
   category: CaptureCategory | null;
-  geo: ReturnType<typeof useGeolocation>;
+  selectedTask: Task | null;
+  geo: {
+    latitude: number | null;
+    longitude: number | null;
+    accuracy: number | null;
+    error: ReturnType<typeof useGeolocation>['error'];
+    locating: boolean;
+  };
   address: string;
   note: string;
+  submitting?: boolean;
+  submitError?: string | null;
   onNoteChange: (v: string) => void;
   onBack: () => void;
   onSubmit: () => void;
 }) {
   const [dismissSimilar, setDismissSimilar] = useState(false);
 
+  const hasCoords = geo.latitude !== null && geo.longitude !== null;
+  const canSubmit = Boolean(dataUrl && hasCoords && !submitting);
+
   // Simulate "similar report nearby" warning (random so it appears sometimes)
-  const hasSimilarWarning = !dismissSimilar && (
-    (geo.latitude !== null && geo.longitude !== null)
-      ? (Math.abs(geo.latitude * 1000 % 1) < 0.4)
-      : false
+  const hasSimilarWarning = !dismissSimilar && hasCoords && (
+    (Math.abs(geo.latitude! * 1000 % 1) < 0.4)
   );
 
-  const lat = geo.latitude?.toFixed(5) ?? '—';
-  const lng = geo.longitude?.toFixed(5) ?? '—';
-  const displayAddress = address || (geo.latitude !== null ? `${lat}, ${lng}` : 'Acquiring location…');
+  const lat = geo.latitude?.toFixed(5) ?? null;
+  const lng = geo.longitude?.toFixed(5) ?? null;
+  const displayAddress = address || (lat && lng ? `${lat}, ${lng}` : null);
 
   return (
     <div className="capture-page">
@@ -575,7 +806,15 @@ function DetailsStep({
         <span style={{ fontWeight: 650, fontSize: 15 }}>Add details</span>
         <div style={{ width: 44 }} />
       </header>
-      <div className="page-content" style={{ paddingTop: 16, paddingBottom: 110 }}>
+      <div className="page-content" style={{ paddingTop: 16, paddingBottom: 120 }}>
+        {selectedTask && (
+          <div style={{ padding: '10px 14px', background: 'var(--secondary)', borderRadius: 12, marginBottom: 14 }}>
+            <span className="eyebrow" style={{ fontSize: 9 }}>TASK TO VERIFY</span>
+            <div style={{ fontWeight: 650, fontSize: 14, marginTop: 2 }}>{selectedTask.title}</div>
+            <div style={{ fontSize: 11, color: 'var(--muted-foreground)', marginTop: 2 }}>{selectedTask.location} · +{selectedTask.points} points</div>
+          </div>
+        )}
+
         {/* Thumbnail */}
         <div className="details-thumb-wrap">
           <img src={dataUrl} alt="Your capture" className="details-thumb" />
@@ -589,13 +828,28 @@ function DetailsStep({
         {/* Mini-map / address card */}
         <div className="details-map-card">
           <div className="details-map-visual">
-            <MapPin size={26} style={{ color: 'var(--primary)' }} />
+            {hasCoords ? (
+              <MapPin size={26} style={{ color: 'var(--primary)' }} />
+            ) : (
+              <WifiOff size={26} style={{ color: 'var(--muted-foreground)' }} />
+            )}
           </div>
           <div className="details-map-text">
             <strong>Location</strong>
-            <span>{displayAddress}</span>
-            {geo.accuracy !== null && (
-              <span className="details-acc">±{Math.round(geo.accuracy)} m accuracy</span>
+            {hasCoords ? (
+              <>
+                <span>{displayAddress}</span>
+                {geo.accuracy !== null && (
+                  <span className="details-acc">±{Math.round(geo.accuracy)} m accuracy (GPS verified)</span>
+                )}
+              </>
+            ) : (
+              <>
+                <span style={{ color: 'var(--muted-foreground)' }}>
+                  {geo.error === 'denied' ? 'Location permission denied' : 'No GPS coordinates obtained'}
+                </span>
+                <span className="details-acc" style={{ color: 'var(--destructive, #ef4444)' }}>GPS location required to submit</span>
+              </>
             )}
           </div>
         </div>
@@ -630,13 +884,36 @@ function DetailsStep({
           />
           <span className="note-counter">{note.length}/200</span>
         </div>
+        {submitError && (
+          <div style={{ padding: '10px 14px', background: 'rgba(239, 68, 68, 0.1)', border: '1px solid var(--destructive, #ef4444)', borderRadius: 10, color: 'var(--destructive, #ef4444)', fontSize: 12, marginTop: 12 }}>
+            <strong>Submission failed:</strong> {submitError}
+          </div>
+        )}
       </div>
 
       {/* Sticky submit */}
       <div className="sticky-action" style={{ bottom: 0 }}>
-        <Button className="w-full" style={{ height: 52 }} onClick={onSubmit}>
-          <Check size={18} /> Submit report
+        <Button
+          className="w-full"
+          style={{ height: 52 }}
+          onClick={onSubmit}
+          disabled={!canSubmit}
+        >
+          {submitting ? (
+            <>
+              <Loader2 size={18} className="animate-spin" /> Submitting report…
+            </>
+          ) : (
+            <>
+              <Check size={18} /> Submit report
+            </>
+          )}
         </Button>
+        {!canSubmit && !submitting && (
+          <p style={{ fontSize: 11, textAlign: 'center', marginTop: 8, color: 'var(--destructive, #ef4444)' }}>
+            {!dataUrl ? 'Photo is required' : 'Acquiring GPS location… coordinates required'}
+          </p>
+        )}
       </div>
     </div>
   );
@@ -646,9 +923,11 @@ function DetailsStep({
 
 function SuccessStep({
   submissionId,
+  selectedTask,
   onDoAnother,
 }: {
   submissionId: string;
+  selectedTask: Task | null;
   onDoAnother: () => void;
 }) {
   const navigate = useNavigate();
@@ -661,22 +940,37 @@ function SuccessStep({
           <Check size={40} strokeWidth={3} color="var(--primary-foreground)" />
         </div>
         <span className="eyebrow" style={{ marginTop: 28, display: 'block' }}>SUBMITTED!</span>
-        <h1 style={{ fontSize: 26, fontWeight: 650, margin: '10px 0 12px', lineHeight: 1.35 }}>
+        <h1 style={{ fontSize: 26, fontWeight: 650, margin: '10px 0 6px', lineHeight: 1.35 }}>
           Under review
         </h1>
-        <p style={{ color: 'var(--muted-foreground)', fontSize: 12, lineHeight: 1.9, maxWidth: 260, margin: '0 auto 32px' }}>
-          Usually verified within 24 hours. We'll notify you as soon as it's approved.
+        {selectedTask && (
+          <p style={{ fontWeight: 600, fontSize: 13, color: 'var(--primary)', marginBottom: 8 }}>
+            {selectedTask.title}
+          </p>
+        )}
+        <p style={{ color: 'var(--muted-foreground)', fontSize: 12, lineHeight: 1.8, maxWidth: 280, margin: '0 auto 28px' }}>
+          Your photo and GPS location have been recorded and are now under review. Usually verified within 24 hours.
         </p>
         <div className="success-actions">
-          <Button className="w-full" onClick={onDoAnother}>
-            <Camera size={17} /> Do another
+          <Button
+            className="w-full"
+            onClick={() => void navigate({ to: '/submissions/$submissionId', params: { submissionId } })}
+          >
+            View submission <ChevronRight size={16} />
           </Button>
           <Button
             variant="outline"
             className="w-full"
             onClick={() => void navigate({ to: '/submissions' })}
           >
-            View submission <ChevronRight size={16} />
+            All submissions
+          </Button>
+          <Button
+            variant="ghost"
+            className="w-full text-muted-foreground"
+            onClick={onDoAnother}
+          >
+            <Camera size={16} /> Submit another report
           </Button>
         </div>
       </div>

@@ -35,8 +35,14 @@ dist-ssr
 .env
 .env.*
 !.env.example
+!.env.local.example
 backend/.env
 backend/.env.*
+!backend/.env.example
+
+# Uploads
+backend/uploads/*
+!backend/uploads/.gitkeep
 
 # Python & Tests
 __pycache__/

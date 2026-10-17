@@ -24,12 +24,13 @@ services:
     container_name: civic_spark_api
     restart: unless-stopped
     ports:
-      - "8000:8000"
+      - "8888:8000"
     environment:
       - DATABASE_URL=postgresql+asyncpg://postgres:${POSTGRES_PASSWORD}@db:5432/civic_spark
       - DATABASE_URL_SYNC=postgresql+psycopg2://postgres:${POSTGRES_PASSWORD}@db:5432/civic_spark
       - JWT_SECRET=${JWT_SECRET}
       - VOUCHER_ENCRYPTION_KEY=${VOUCHER_ENCRYPTION_KEY}
+      - OTP_HMAC_SECRET=${OTP_HMAC_SECRET}
       - UPLOAD_DIR=/app/uploads
       - ENVIRONMENT=development
     env_file:

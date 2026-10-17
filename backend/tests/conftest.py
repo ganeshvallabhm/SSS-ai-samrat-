@@ -9,6 +9,7 @@ from httpx import AsyncClient, ASGITransport
 from app.config import settings
 from app.main import app
 from app.db import get_db
+import app.services.otp as _otp_service  # for resetting IP rate-limit log
 
 
 def get_test_urls():
@@ -38,9 +39,23 @@ def find_schema_sql() -> Path:
     raise FileNotFoundError("Could not find db/schema.sql in expected paths")
 
 
+def find_seed_sql() -> Path:
+    candidates = [
+        Path("/db/seed_reference.sql"),
+        Path(__file__).resolve().parents[2] / "db" / "seed_reference.sql",
+        Path(__file__).resolve().parents[1] / "db" / "seed_reference.sql",
+        Path("db/seed_reference.sql"),
+        Path("../db/seed_reference.sql"),
+    ]
+    for p in candidates:
+        if p.exists():
+            return p
+    raise FileNotFoundError("Could not find db/seed_reference.sql in expected paths")
+
+
 @pytest.fixture(scope="session", autouse=True)
 def setup_test_database():
-    """Create isolated civic_spark_test database and apply schema if missing."""
+    """Create isolated civic_spark_test database and apply schema + reference seed if missing."""
     # 1. Connect to PostgreSQL maintenance database and ensure civic_spark_test exists
     m_engine = sa.create_engine(MAINTENANCE_SYNC_URL, isolation_level="AUTOCOMMIT")
     with m_engine.connect() as conn:
@@ -64,6 +79,19 @@ def setup_test_database():
             raw_conn = conn.connection
             cur = raw_conn.cursor()
             cur.execute(sql)
+            cur.close()
+
+        # 3. Ensure reference data (app_config, task_categories, wards, vouchers) exists
+        categories_count = conn.execute(
+            sa.text("SELECT count(*) FROM task_categories")
+        ).scalar()
+        if not categories_count:
+            seed_file = find_seed_sql()
+            with open(seed_file, "r", encoding="utf-8") as f:
+                seed_sql = f.read()
+            raw_conn = conn.connection
+            cur = raw_conn.cursor()
+            cur.execute(seed_sql)
             cur.close()
 
     yield
@@ -105,3 +133,11 @@ async def client(async_db):
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         yield ac
     app.dependency_overrides.clear()
+
+
+@pytest.fixture(autouse=True)
+def reset_ip_rate_limit():
+    """Clear the in-memory per-IP OTP rate limit log before every test."""
+    _otp_service._ip_request_log.clear()
+    yield
+    _otp_service._ip_request_log.clear()

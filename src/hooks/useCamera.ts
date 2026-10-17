@@ -56,15 +56,22 @@ export function useCamera(): UseCameraReturn {
 
   // Check for insecure context up-front
   useEffect(() => {
+    const isSecure = window.isSecureContext ?? (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1');
     if (!navigator.mediaDevices?.getUserMedia) {
       setState(s => ({
         ...s,
-        error: location.protocol !== 'https:' && location.hostname !== 'localhost'
-          ? 'insecure_context'
-          : 'no_camera',
+        error: !isSecure ? 'insecure_context' : 'no_camera',
       }));
     }
   }, []);
+
+  // Ensure stream is attached to video element whenever stream or videoRef becomes available
+  useEffect(() => {
+    if (state.stream && videoRef.current && videoRef.current.srcObject !== state.stream) {
+      videoRef.current.srcObject = state.stream;
+      videoRef.current.play().catch(() => {});
+    }
+  }, [state.stream]);
 
   const stopCamera = useCallback(() => {
     streamRef.current?.getTracks().forEach(t => t.stop());
@@ -73,12 +80,11 @@ export function useCamera(): UseCameraReturn {
   }, []);
 
   const startCamera = useCallback(async (facing: FacingMode = 'environment') => {
+    const isSecure = window.isSecureContext ?? (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1');
     if (!navigator.mediaDevices?.getUserMedia) {
       setState(s => ({
         ...s,
-        error: location.protocol !== 'https:' && location.hostname !== 'localhost'
-          ? 'insecure_context'
-          : 'no_camera',
+        error: !isSecure ? 'insecure_context' : 'no_camera',
       }));
       return;
     }
@@ -89,20 +95,33 @@ export function useCamera(): UseCameraReturn {
     setState(s => ({ ...s, ready: false, error: null, stream: null }));
 
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          facingMode: { ideal: facing },
-          width: { ideal: 1920 },
-          height: { ideal: 1080 },
-        },
-        audio: false,
-      });
+      let stream: MediaStream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            facingMode: { ideal: facing },
+            width: { ideal: 1920 },
+            height: { ideal: 1080 },
+          },
+          audio: false,
+        });
+      } catch {
+        // Fallback to basic video constraint if ideal facingMode/resolution fails
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: true,
+          audio: false,
+        });
+      }
 
       streamRef.current = stream;
 
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
-        await videoRef.current.play();
+        try {
+          await videoRef.current.play();
+        } catch {
+          // Play might be deferred until user interaction or loadedmetadata
+        }
       }
 
       // Check torch support
@@ -150,10 +169,12 @@ export function useCamera(): UseCameraReturn {
     const video = videoRef.current;
     if (!video || !state.ready) return null;
 
+    const vw = video.videoWidth || 1280;
+    const vh = video.videoHeight || 720;
     const TARGET_WIDTH = 1280;
-    const ratio = video.videoHeight / video.videoWidth;
+    const ratio = vh / vw;
     const w = TARGET_WIDTH;
-    const h = Math.round(TARGET_WIDTH * ratio);
+    const h = Math.round(TARGET_WIDTH * (isNaN(ratio) || ratio <= 0 ? 0.75 : ratio));
 
     const canvas = document.createElement('canvas');
     canvas.width = w;
